@@ -42,14 +42,14 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. A logged-in user calls `POST /api/v1/auth/logout` and subsequent requests with that token are rejected with 401
   5. All EDGAR client requests in the test suite carry the `Vantage/1.0 vishwak.vel@gmail.com` User-Agent header (verified via mock assertions)
 
-**Plans**: 3/8 plans executed
+**Plans**: 4/8 plans executed
 
 Plans:
 
 - [x] 01-01-PLAN.md — Project scaffold: pyproject.toml, requirements/, Dockerfile, docker-compose.yml (4 services + health checks)
 - [x] 01-02-PLAN.md — App core structure: Settings config, FastAPI factory, DB base + async session, all 9 ORM models
 - [x] 01-03-PLAN.md — Alembic setup: async-compatible env.py, initial migration creating all 9 tables
-- [ ] 01-04-PLAN.md — Auth service layer: security.py (bcrypt + JWT), Pydantic models, register/login/logout/revoke service functions
+- [x] 01-04-PLAN.md — Auth service layer: security.py (bcrypt + JWT), Pydantic models, register/login/logout/revoke service functions
 - [ ] 01-05-PLAN.md — Auth API endpoints: dependencies.py (get_current_user), auth router (register/login/logout/me), wire into main.py
 - [ ] 01-06-PLAN.md — Service stubs: Groq async token-bucket rate limiter, EDGAR HTTP client (User-Agent), section_constants.py
 - [ ] 01-07-PLAN.md — Auth integration tests: conftest.py fixtures, 12 endpoint tests covering all SPEC ACs and prohibitions
@@ -110,7 +110,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Auth | 3/8 | In Progress|  |
+| 1. Foundation & Auth | 4/8 | In Progress|  |
 | 2. Document Ingestion Pipeline | 0/? | Not started | - |
 | 3. Research Request & Disambiguation | 0/? | Not started | - |
 | 4. Minimal Agent Run | 0/? | Not started | - |
