@@ -17,12 +17,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import app.db.models  # noqa: F401 — registers all ORM classes with Base.metadata
 from app.core.config import Settings, get_settings
 from app.db.base import Base
 from app.db.session import get_session
 from app.main import create_app
-
-import app.db.models  # noqa: F401 — registers all ORM classes with Base.metadata
 
 # ---------------------------------------------------------------------------
 # Constants
