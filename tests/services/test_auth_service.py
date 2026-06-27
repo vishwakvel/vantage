@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -78,9 +77,7 @@ class TestRegisterUser:
         session = AsyncMock()
         existing_user = _make_user()
         session.execute.return_value = AsyncMock(
-            scalars=MagicMock(
-                return_value=MagicMock(first=MagicMock(return_value=existing_user))
-            )
+            scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=existing_user)))
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -98,7 +95,9 @@ class TestRegisterUser:
             scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=None)))
         )
 
-        with patch("app.services.auth_service.hash_password", return_value="bcrypt-hash") as mock_hp:
+        with patch(
+            "app.services.auth_service.hash_password", return_value="bcrypt-hash"
+        ) as mock_hp:
             with patch(
                 "app.services.auth_service.create_access_token",
                 return_value=("tok", "jti", int(time.time()) + 86400),
@@ -191,9 +190,9 @@ class TestLoginUser:
             with pytest.raises(HTTPException) as exc2:
                 await login_user("user@example.com", "wrong", session2, settings)
 
-        assert exc1.value.detail == exc2.value.detail, (
-            "Error messages must be identical to prevent username enumeration"
-        )
+        assert (
+            exc1.value.detail == exc2.value.detail
+        ), "Error messages must be identical to prevent username enumeration"
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +214,9 @@ class TestLogoutUser:
         redis_client.set.assert_called_once()
         call_kwargs = redis_client.set.call_args
         # Key must be "revoked:{jti}"
-        assert call_kwargs[0][0] == f"revoked:{jti}" or call_kwargs[1].get("key") == f"revoked:{jti}"
+        assert (
+            call_kwargs[0][0] == f"revoked:{jti}" or call_kwargs[1].get("key") == f"revoked:{jti}"
+        )
 
     @pytest.mark.anyio
     async def test_redis_set_ttl_is_positive(self):
@@ -229,7 +230,9 @@ class TestLogoutUser:
 
         call_kwargs = redis_client.set.call_args
         # ex kwarg must be positive
-        ex_value = call_kwargs[1].get("ex") or call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        ex_value = (
+            call_kwargs[1].get("ex") or call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        )
         # Extract ex from keyword args
         ex_value = call_kwargs[1].get("ex")
         assert ex_value is not None

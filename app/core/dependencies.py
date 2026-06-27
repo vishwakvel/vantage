@@ -16,14 +16,13 @@ instead of their original modules:
 - ``get_settings`` from app.core.config
 """
 
+import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.status import HTTP_401_UNAUTHORIZED
-
-import redis.asyncio as aioredis
 
 from app.core.config import Settings, get_settings
 from app.core.security import decode_access_token

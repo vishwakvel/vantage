@@ -21,11 +21,12 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.db.models  # noqa: F401 — registers all ORM classes with Base.metadata
+
 # Import Base and all models so autogenerate detects all 9 tables.
 # Defining target_metadata here (before any context access) makes this
 # module importable for standalone verification without the Alembic runtime.
 from app.db.base import Base
-import app.db.models  # noqa: F401 — registers all ORM classes with Base.metadata
 
 target_metadata = Base.metadata
 
@@ -34,6 +35,7 @@ target_metadata = Base.metadata
 # Everything below this line requires the Alembic CLI runtime.
 # Guard with hasattr so direct Python imports (e.g. tests) don't fail.
 # ---------------------------------------------------------------------------
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (generate SQL without a DB connection)."""

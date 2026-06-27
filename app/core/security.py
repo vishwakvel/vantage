@@ -14,7 +14,7 @@ The direct bcrypt API provides identical security properties.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import bcrypt as _bcrypt
 from jose import JWTError, jwt  # noqa: F401 — re-exported so callers can catch JWTError
@@ -62,7 +62,7 @@ def create_access_token(
     Security: exp - iat == expires_seconds <= 86700 (SPEC tolerance).
     """
     jti: str = str(uuid.uuid4())
-    iat: int = int(datetime.now(timezone.utc).timestamp())
+    iat: int = int(datetime.now(UTC).timestamp())
     exp: int = iat + expires_seconds
 
     payload: dict = {

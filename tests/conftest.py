@@ -76,10 +76,20 @@ async def db_session(test_settings: Settings) -> AsyncSession:
 
     The drop_all ensures tests never share state.  A fresh engine is created
     per function so no connection pool leaks across tests.
+
+    Skips automatically when test-postgres (port 5433) is unreachable so the
+    suite can still run in environments without docker-compose.test.yml.
     """
     engine = create_async_engine(test_settings.DATABASE_URL, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except OSError as exc:
+        await engine.dispose()
+        pytest.skip(f"test-postgres not running (docker-compose.test.yml): {exc}")
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f"test-postgres unavailable: {exc}")
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         yield session

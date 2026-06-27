@@ -99,7 +99,11 @@ def upgrade() -> None:
         sa.Column(
             "source_type",
             sa.Enum(
-                "EDGAR", "NEWS", "FRED", "ARXIV", "USER_UPLOAD",
+                "EDGAR",
+                "NEWS",
+                "FRED",
+                "ARXIV",
+                "USER_UPLOAD",
                 name="documentsourcetype",
             ),
             nullable=False,
@@ -118,17 +122,11 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], ondelete="SET NULL"
-        ),
-        sa.ForeignKeyConstraint(
-            ["ticker"], ["companies.ticker"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["ticker"], ["companies.ticker"], ondelete="SET NULL"),
         sa.UniqueConstraint("canonical_id", name="uq_documents_canonical_id"),
     )
-    op.create_index(
-        "ix_documents_canonical_id", "documents", ["canonical_id"], unique=True
-    )
+    op.create_index("ix_documents_canonical_id", "documents", ["canonical_id"], unique=True)
 
     # ------------------------------------------------------------------
     # 4. document_chunks
@@ -158,12 +156,8 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["document_id"], ["documents.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["ticker"], ["companies.ticker"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["ticker"], ["companies.ticker"], ondelete="SET NULL"),
     )
 
     # ------------------------------------------------------------------
@@ -197,9 +191,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
     )
 
     # ------------------------------------------------------------------
@@ -251,12 +243,8 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["request_id"], ["research_requests.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["request_id"], ["research_requests.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
     )
 
     # ------------------------------------------------------------------
@@ -285,7 +273,11 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "PENDING", "RUNNING", "COMPLETE", "PARTIAL", "FAILED",
+                "PENDING",
+                "RUNNING",
+                "COMPLETE",
+                "PARTIAL",
+                "FAILED",
                 name="researchmemostatus",
             ),
             nullable=False,
@@ -309,15 +301,9 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["plan_id"], ["research_plans.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"], ["users.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["ticker"], ["companies.ticker"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["plan_id"], ["research_plans.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["ticker"], ["companies.ticker"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(
             ["parent_memo_id"],
             ["research_memos.id"],
@@ -346,7 +332,11 @@ def upgrade() -> None:
         sa.Column(
             "status",
             sa.Enum(
-                "PENDING", "RUNNING", "SUCCESS", "PARTIAL", "FAILED",
+                "PENDING",
+                "RUNNING",
+                "SUCCESS",
+                "PARTIAL",
+                "FAILED",
                 name="agenttaskstatus",
             ),
             nullable=False,
@@ -364,9 +354,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["plan_id"], ["research_plans.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["plan_id"], ["research_plans.id"], ondelete="CASCADE"),
     )
 
     # ------------------------------------------------------------------
@@ -399,9 +387,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["task_id"], ["agent_tasks.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["task_id"], ["agent_tasks.id"], ondelete="CASCADE"),
         sa.UniqueConstraint("task_id", name="uq_agent_outputs_task_id"),
     )
 

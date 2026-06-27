@@ -21,18 +21,15 @@ gets full enum semantics without requiring ``ALTER TYPE`` for new values (D-14).
 from __future__ import annotations
 
 import enum
-import uuid
-from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Column,
     DateTime,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
@@ -45,7 +42,7 @@ from app.db.base import Base
 # ---------------------------------------------------------------------------
 
 
-class ResearchMemoStatus(str, enum.Enum):
+class ResearchMemoStatus(enum.StrEnum):
     """Lifecycle states for a ResearchMemo."""
 
     PENDING = "PENDING"
@@ -55,7 +52,7 @@ class ResearchMemoStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class ResearchPlanStatus(str, enum.Enum):
+class ResearchPlanStatus(enum.StrEnum):
     """Lifecycle states for a ResearchPlan (mirrors execution phases)."""
 
     PENDING = "PENDING"
@@ -66,7 +63,7 @@ class ResearchPlanStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class AgentTaskStatus(str, enum.Enum):
+class AgentTaskStatus(enum.StrEnum):
     """Lifecycle states for an AgentTask."""
 
     PENDING = "PENDING"
@@ -76,14 +73,14 @@ class AgentTaskStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class DocumentVisibility(str, enum.Enum):
+class DocumentVisibility(enum.StrEnum):
     """Visibility scope for a Document."""
 
     PUBLIC = "PUBLIC"
     PRIVATE = "PRIVATE"
 
 
-class DocumentSourceType(str, enum.Enum):
+class DocumentSourceType(enum.StrEnum):
     """Origin system of a Document."""
 
     EDGAR = "EDGAR"
@@ -93,7 +90,7 @@ class DocumentSourceType(str, enum.Enum):
     USER_UPLOAD = "USER_UPLOAD"
 
 
-class AgentOutputCompleteness(str, enum.Enum):
+class AgentOutputCompleteness(enum.StrEnum):
     """Whether an AgentOutput was fully or partially populated."""
 
     FULL = "FULL"

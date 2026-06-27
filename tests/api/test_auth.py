@@ -14,6 +14,7 @@ Prohibitions validated:
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from httpx import AsyncClient
 from jose import jwt as jose_jwt
 
@@ -56,6 +57,7 @@ async def register_and_get_token(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.anyio
 async def test_register_new_user(async_client: AsyncClient):
     """POST /register with a fresh email returns 200 with access_token."""
     resp = await async_client.post(
@@ -67,6 +69,7 @@ async def test_register_new_user(async_client: AsyncClient):
     assert data["token_type"] == "bearer"
 
 
+@pytest.mark.anyio
 async def test_register_duplicate_email(async_client: AsyncClient):
     """Registering the same email twice returns 409 on the second call."""
     payload = {"email": "dup@test.com", "password": "Secret123"}
@@ -76,6 +79,7 @@ async def test_register_duplicate_email(async_client: AsyncClient):
     assert resp.status_code == 409
 
 
+@pytest.mark.anyio
 async def test_register_response_has_no_credential_fields(async_client: AsyncClient):
     """Registration response JSON must not include 'password' or 'password_hash'.
 
@@ -95,6 +99,7 @@ async def test_register_response_has_no_credential_fields(async_client: AsyncCli
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.anyio
 async def test_login_correct(async_client: AsyncClient):
     """Register then login with same credentials returns 200 + access_token."""
     await async_client.post(REGISTER_URL, json={"email": "login@test.com", "password": "Pass1234"})
@@ -105,6 +110,7 @@ async def test_login_correct(async_client: AsyncClient):
     assert "access_token" in resp.json()
 
 
+@pytest.mark.anyio
 async def test_login_wrong_password(async_client: AsyncClient):
     """Login with wrong password returns 401."""
     await async_client.post(REGISTER_URL, json={"email": "wp@test.com", "password": "Correct1"})
@@ -112,6 +118,7 @@ async def test_login_wrong_password(async_client: AsyncClient):
     assert resp.status_code == 401
 
 
+@pytest.mark.anyio
 async def test_login_unknown_email(async_client: AsyncClient):
     """Login with an email not in the DB returns 401."""
     resp = await async_client.post(LOGIN_URL, json={"email": "nobody@test.com", "password": "Pass"})
@@ -123,6 +130,7 @@ async def test_login_unknown_email(async_client: AsyncClient):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.anyio
 async def test_me_authenticated(async_client: AsyncClient, test_settings):
     """GET /me with a valid token returns 200 and the registered user's email."""
     token = await register_and_get_token(async_client, "me@test.com")
@@ -131,6 +139,7 @@ async def test_me_authenticated(async_client: AsyncClient, test_settings):
     assert resp.json()["email"] == "me@test.com"
 
 
+@pytest.mark.anyio
 async def test_me_unauthenticated(async_client: AsyncClient):
     """GET /me without Authorization header returns 401 or 403."""
     resp = await async_client.get(ME_URL)
@@ -142,6 +151,7 @@ async def test_me_unauthenticated(async_client: AsyncClient):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.anyio
 async def test_jwt_expiry_within_tolerance(async_client: AsyncClient, test_settings):
     """Decoded JWT exp - iat must not exceed 86700 seconds (24h + 5min tolerance)."""
     token = await register_and_get_token(async_client)
@@ -159,6 +169,7 @@ async def test_jwt_expiry_within_tolerance(async_client: AsyncClient, test_setti
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.anyio
 async def test_logout_revokes_token(async_client: AsyncClient):
     """After logout the same token must be rejected with 401.
 
@@ -175,12 +186,14 @@ async def test_logout_revokes_token(async_client: AsyncClient):
     assert resp2.status_code == 401
 
 
+@pytest.mark.anyio
 async def test_logout_requires_auth(async_client: AsyncClient):
     """POST /logout without Authorization header returns 401 or 403."""
     resp = await async_client.post(LOGOUT_URL)
     assert resp.status_code in (401, 403)
 
 
+@pytest.mark.anyio
 async def test_redis_down_returns_503(async_client: AsyncClient):
     """POST /logout returns 503 when the Redis blocklist is unreachable.
 

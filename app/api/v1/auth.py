@@ -56,9 +56,7 @@ async def register(
     Raises:
         HTTPException(409): If the email is already registered.
     """
-    token, _jti, _exp = await register_user(
-        body.email, body.password, session, settings
-    )
+    token, _jti, _exp = await register_user(body.email, body.password, session, settings)
     return TokenResponse(access_token=token)
 
 
@@ -82,9 +80,7 @@ async def login(
         HTTPException(401): If credentials are invalid (same message for
             "user not found" and "wrong password" to prevent enumeration).
     """
-    token, _jti, _exp = await login_user(
-        body.email, body.password, session, settings
-    )
+    token, _jti, _exp = await login_user(body.email, body.password, session, settings)
     return TokenResponse(access_token=token)
 
 
