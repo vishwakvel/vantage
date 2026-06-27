@@ -8,9 +8,9 @@
 
 ### Authentication
 
-- [ ] **AUTH-01**: User can register an account with email and password
-- [ ] **AUTH-02**: User can log in and remain authenticated across sessions via JWT
-- [ ] **AUTH-03**: User can log out from any page
+- [x] **AUTH-01**: User can register an account with email and password
+- [x] **AUTH-02**: User can log in and remain authenticated across sessions via JWT
+- [x] **AUTH-03**: User can log out from any page
 
 ### Document Ingestion
 
@@ -98,9 +98,9 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AUTH-01 | Phase 1 | Pending |
-| AUTH-02 | Phase 1 | Pending |
-| AUTH-03 | Phase 1 | Pending |
+| AUTH-01 | Phase 1 | Complete |
+| AUTH-02 | Phase 1 | Complete |
+| AUTH-03 | Phase 1 | Complete |
 | INGEST-01 | Phase 2 | Pending |
 | INGEST-02 | Phase 2 | Pending |
 | INGEST-03 | Phase 2 | Pending |
@@ -119,6 +119,7 @@
 | MEMO-03 | Phase 4 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 19 total
 - Mapped to phases: 19/19 (100%)
 - Unmapped: 0

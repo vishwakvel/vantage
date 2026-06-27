@@ -2,17 +2,18 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: Walking Skeleton
-current_phase: 1
-status: planning
-stopped_at: Phase 1 planned — 8 plans ready for execution
-last_updated: "2026-06-27T14:00:00.000Z"
+current_phase: 01
+current_phase_name: foundation-auth
+status: executing
+stopped_at: "Completed 01-01-PLAN.md: project scaffold"
+last_updated: "2026-06-27T16:01:58.368Z"
 last_activity: 2026-06-27
-last_activity_desc: Phase 1 planned — 8 plans, 5 waves, walking skeleton + auth
+last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 8
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -23,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-27)
 
 **Core value:** Given a ticker or investment thesis, produce a fully cited ResearchMemo with explicit Contradictions — in minutes, not hours.
-**Current focus:** Phase 1 — Foundation & Auth
+**Current focus:** Phase 01 — foundation-auth
 
 ## Current Position
 
-Phase: 1 of 4 (planned, ready to execute)
-Plan: —
-Status: Phase 1 planned — 8 plans across 5 waves ready for /gsd-execute-phase 1
-Last activity: 2026-06-27 — Phase 1 planned (8 plans, walking skeleton + auth)
+Phase: 01 (foundation-auth) — EXECUTING
+Plan: 2 of 8
+Status: Ready to execute
+Last activity: 2026-06-27 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -54,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: —
 
 *Updated after each plan completion*
+| Phase 01 P01 | 2 | - tasks | - files |
 
 ## Accumulated Context
 
@@ -68,6 +70,10 @@ Recent decisions affecting current work:
 - Day-one: section_constants.py is the single source of truth for all section string literals
 - Day-one: All external API calls live in app/services/ only — never inline in agents
 - Phase 4 is sync-only: no WebSocket, no Celery — curl/Postman sufficient to verify walking skeleton
+- [Phase ?]: All runtime packages pinned to exact versions in requirements/base.txt per supply chain threat model
+- [Phase ?]: Docker Compose api service depends_on postgres/redis/chromadb with condition: service_healthy — startup ordering enforced
+- [Phase ?]: Test isolation via docker-compose.test.yml test-postgres on port 5433 (D-03)
+- [Phase ?]: Dockerfile secrets via env_file at runtime — .env never copied into image layer (T-01-P1-02)
 
 ### Pending Todos
 
@@ -92,6 +98,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-27T14:00:00.000Z
-Stopped at: Phase 1 planned — 8 plans verified, ready for execution
-Resume file: .planning/phases/01-foundation-auth/01-01-PLAN.md
+Last session: 2026-06-27T16:01:58.364Z
+Stopped at: Completed 01-01-PLAN.md: project scaffold
+Resume file: None
