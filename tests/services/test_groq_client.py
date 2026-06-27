@@ -18,7 +18,6 @@ from app.services.groq_client import (
     groq_rate_limiter,
 )
 
-
 # ---------------------------------------------------------------------------
 # Singleton and capacity
 # ---------------------------------------------------------------------------
@@ -103,7 +102,7 @@ async def test_acquire_never_raises_on_empty_bucket() -> None:
     # Must not raise — must return (after blocking)
     try:
         await asyncio.wait_for(limiter.acquire(1), timeout=2.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail("acquire() timed out — should have unblocked after refill")
     except Exception as exc:
         pytest.fail(f"acquire() raised {type(exc).__name__}: {exc}")
