@@ -1,15 +1,24 @@
-# Requirements: Vantage
+# Requirements: Vantage — Milestone v1.0 Walking Skeleton
 
 **Defined:** 2026-06-27
-**Core Value:** Given a ticker or investment thesis, produce a fully cited ResearchMemo with explicit Contradictions — in minutes, not hours.
+**Milestone:** v1.0 Walking Skeleton
+**Core Value:** Prove the full research pipeline works end-to-end — request → EDGAR ingest → hybrid RAG → 2 agents → ResearchMemo.
 
-## v1 Requirements
+## v1 Requirements (Milestone Scope)
 
 ### Authentication
 
 - [ ] **AUTH-01**: User can register an account with email and password
 - [ ] **AUTH-02**: User can log in and remain authenticated across sessions via JWT
 - [ ] **AUTH-03**: User can log out from any page
+
+### Document Ingestion
+
+- [ ] **INGEST-01**: SEC filings (10-K, 10-Q, 8-K) are automatically ingested when a ticker is researched; no manual upload required
+- [ ] **INGEST-02**: Previously ingested public documents are reused across future research runs for the same ticker without re-fetching
+- [ ] **INGEST-03**: Private user-uploaded documents are invisible to all other users
+- [ ] **INGEST-04**: Ingestion failures for specific sources are surfaced to the user before the memo is read
+- [ ] **INGEST-05**: The same public filing is deduplicated via canonical_id even when it arrives from multiple sources (e.g. EDGAR API + user upload)
 
 ### Research Request & Disambiguation
 
@@ -20,162 +29,102 @@
 - [ ] **REQST-05**: User can request multi-ticker research (e.g. "Compare AAPL and MSFT") in a single request
 - [ ] **REQST-06**: User can upload a private PDF (e.g. proprietary financial model) as additional research input for a request
 
-### Research Execution & Progress
+### Agent Execution (Minimal — 2 Agents)
 
-- [ ] **EXEC-01**: User sees a live agent progress panel showing each agent's status while a ResearchMemo is being generated
 - [ ] **EXEC-02**: Agent statuses are shown as SUCCESS, PARTIAL (output with gaps), or FAILED (no output)
-- [ ] **EXEC-03**: System produces a PARTIAL ResearchMemo when one or more agents fail, rather than failing the entire run
-- [ ] **EXEC-04**: Failed or missing memo sections are explicitly marked with a reason, not silently omitted
-- [ ] **EXEC-05**: Research completes asynchronously; user can navigate away and return to a completed memo
+- [ ] **EXEC-03**: System produces a PARTIAL ResearchMemo when FundamentalAnalysis fails, rather than aborting the run
 
-### ResearchMemo — Reading & Navigation
+### ResearchMemo Output (Minimal)
 
-- [ ] **MEMO-01**: ResearchMemo is structured into named, collapsible sections: Fundamentals, Sentiment, Risk Register, Macro Context, Comparable Companies, Synthesis
+- [ ] **MEMO-01**: ResearchMemo is structured into named sections (Fundamentals and Synthesis at minimum; full section set in Milestone 2)
 - [ ] **MEMO-02**: Every factual claim in the memo links to the specific source chunk it was derived from
 - [ ] **MEMO-03**: Each source citation includes the quoted excerpt inline (no external doc required to understand the evidence)
-- [ ] **MEMO-04**: ResearchMemo has a dedicated Contradictions section listing agent disagreements with both claims shown and a severity rating (LOW / MEDIUM / HIGH)
-- [ ] **MEMO-05**: ResearchMemo displays COMPLETE or PARTIAL status at a glance so users can calibrate trust before acting
-- [ ] **MEMO-06**: ResearchMemo shows the total generation cost: LLM tokens (in/out) and external API call count
 
-### Follow-Up Chat (Session)
+## Future Requirements (Deferred to Milestone 2+)
 
-- [ ] **CHAT-01**: User can ask follow-up questions about a memo in a persistent chat session
-- [ ] **CHAT-02**: Follow-up answers are grounded exclusively on the memo text and conversation history — the RAG pipeline is not re-queried
-- [ ] **CHAT-03**: Chat session persists indefinitely and is resumable across browser closes and sign-outs
-- [ ] **CHAT-04**: System indicates when a follow-up question genuinely exceeds the memo's coverage, prompting a new research request
+### Agent Execution — Full Layer
 
-### Document Ingestion
+- **EXEC-01**: Live agent progress panel via WebSocket (real-time per-agent status)
+- **EXEC-04**: Failed/missing memo sections explicitly marked with reason (not silently omitted)
+- **EXEC-05**: Research completes asynchronously; user can navigate away and return to completed memo
 
-- [ ] **INGEST-01**: SEC filings (10-K, 10-Q, 8-K) are automatically ingested when a ticker is researched; no manual upload required
-- [ ] **INGEST-02**: Previously ingested public documents are reused across future research runs for the same ticker without re-fetching
-- [ ] **INGEST-03**: Private user-uploaded documents are invisible to all other users
-- [ ] **INGEST-04**: Ingestion failures for specific sources are surfaced to the user before the memo is read
-- [ ] **INGEST-05**: The same public filing is deduplicated via canonical_id even when it arrives from multiple sources (e.g. EDGAR API + user upload)
+### ResearchMemo — Full Feature Set
 
-### Financial Metrics & Anomaly Detection
+- **MEMO-04**: Dedicated Contradictions section (severity-rated agent disagreements) — needs 3+ agents
+- **MEMO-05**: COMPLETE / PARTIAL status displayed at a glance
+- **MEMO-06**: Total generation cost shown (LLM tokens + external API call counts)
 
-- [ ] **METRIC-01**: Structured financial metrics (revenue, gross margin, P/E, etc.) are extracted and stored per (ticker, metric_name, period) as a first-class persisted table; newer filings supersede older values for the same period
-- [ ] **METRIC-02**: Anomalies in the fundamentals section appear as named, severity-rated items (e.g. "gross margin compression outside historical range for this sector")
-- [ ] **METRIC-03**: Anomaly detection compares a metric against the company's own historical range, not a generic sector threshold
+### Full Agent Suite (Milestone 2)
 
-### Watchlist & Alerts
+- **EXEC-full**: SentimentNLP, RiskAssessment, MacroSector, ComparableCompanies agents wired into LangGraph fan-out
 
-- [ ] **WATCH-01**: User can add a ticker to their watchlist to enable ongoing monitoring
-- [ ] **WATCH-02**: User can attach an optional investment thesis to a watchlist entry that alert-triggered memos will re-evaluate
-- [ ] **WATCH-03**: User can configure multiple independent AlertRules on a single watchlist entry
-- [ ] **WATCH-04**: NEW_FILING alert rule fires when SEC publishes a new 10-K, 10-Q, or 8-K for a watched ticker
-- [ ] **WATCH-05**: PRICE_MOVE alert rule fires when a watched ticker moves beyond a user-configurable percentage over a user-configurable time window
-- [ ] **WATCH-06**: SCHEDULED alert rule re-runs research on a user-configured cron schedule
-- [ ] **WATCH-07**: SCHEDULED alerts skip spawning a memo when no new Documents have been ingested for the ticker since the last memo; a WatchlistEvent with status SKIPPED is still recorded
-- [ ] **WATCH-08**: Alert-spawned ResearchMemos link to the most recent prior memo for the same ticker via parent_memo_id, forming a lineage chain
-- [ ] **WATCH-09**: User can view a history of every AlertRule firing, including SKIPPED runs, with the trigger payload that caused it
-- [ ] **WATCH-10**: User can pause and resume individual AlertRules without deleting them
+### Follow-Up Chat / Sessions (Milestone 2)
 
-### Observability & Cost
+- **CHAT-01**: Persistent follow-up chat session grounded on memo text
+- **CHAT-02**: Follow-up answers grounded on memo + conversation history only (no RAG re-query)
+- **CHAT-03**: Session persists indefinitely and is resumable
+- **CHAT-04**: System flags when follow-up exceeds memo coverage
 
-- [ ] **OBS-01**: Every LangGraph agent call is traced in LangSmith with full inputs and outputs
-- [ ] **OBS-02**: Per-agent cost breakdown (tokens_in, tokens_out, cost_usd, external_api_calls per provider) is aggregated to a per-memo total
-- [ ] **OBS-03**: A periodic offline RAGAS evaluation Celery beat job runs against a golden test set (target: ≥ 20 curated query/expected-chunks pairs) to catch retrieval regressions
+### Financial Metrics & Anomaly Detection (Milestone 2)
 
-## v2 Requirements
+- **METRIC-01**: Structured financial metrics stored per (ticker, metric_name, period)
+- **METRIC-02**: Anomalies appear as named, severity-rated items in fundamentals section
+- **METRIC-03**: Anomaly detection uses company's own historical range
 
-### Advanced Alerts
+### Watchlist & Alerts (Milestone 2)
 
-- **ALERT-V2-01**: SENTIMENT_SPIKE alert rule that fires on significant sentiment change detected via continuous FinBERT inference on live news stream
+- **WATCH-01** through **WATCH-10**: All watchlist and alert rule features
 
-### Cross-Memo Analytics
+### Observability & Cost (Milestone 2)
 
-- **CROSS-V2-01**: Cross-memo Anomaly queries ("show all anomalies for AAPL over time") — requires promoting Anomaly to first-class entity
-- **CROSS-V2-02**: Cross-memo Risk queries across memo lineage chains — same prerequisite
+- **OBS-01**: LangSmith traces for every agent call
+- **OBS-02**: Per-agent cost breakdown aggregated to per-memo total
+- **OBS-03**: Offline RAGAS evaluation Celery beat job
 
-### Notifications
-
-- **NOTF-V2-01**: Email or push notifications when alert rules fire (in-app pub/sub only at launch)
-
-### Social & Sharing
-
-- **SOCIAL-V2-01**: Memo sharing features (memos are private to owning user at launch)
-
-### Mobile
-
-- **MOBILE-V2-01**: Native mobile app (web frontend only at launch)
-
-### ML
-
-- **ML-V2-01**: Fine-tuned FinBERT for sentiment (uses pre-trained model at launch)
-
-## Out of Scope
+## Out of Scope (Milestone 1)
 
 | Feature | Reason |
 |---------|--------|
-| SENTIMENT_SPIKE alert rule | Requires continuous FinBERT inference on live news stream — v2 |
-| Cross-memo Anomaly/Risk analytics | Requires promoting Anomaly and Risk to first-class entities — v2 |
-| Admin roles / multi-role authorization | Single user role at launch; RBAC is v2 |
-| Email/push alert notifications | In-app pub/sub only; email adds deliverability ops overhead |
-| Memo sharing / social features | Memos are scoped to owning user; sharing is v2 |
-| Real-time market data streaming | Price polling via yfinance only; streaming adds WebSocket + feed cost |
-| Mobile native app | Web-first; React PWA if needed |
-| Fine-tuning FinBERT | Pre-trained model sufficient at launch |
-| Real API calls in tests | Mock at services/ boundary — never in tests |
-| Committing to main directly | Feature branches only per CLAUDE.md |
+| WebSocket progress panel | Adds async infrastructure complexity — walking skeleton is synchronous |
+| Async Celery research tasks | Sync pipeline sufficient to prove end-to-end; async layer is Milestone 2 |
+| 5 remaining specialist agents | Walking skeleton needs only FundamentalAnalysis + Synthesis |
+| Contradictions panel | Requires 3+ agents with overlapping claims to be meaningful |
+| Chat/session layer | Depends on completed memo pipeline — Milestone 2 |
+| Watchlist & alerts | Depends on full async pipeline — Milestone 2 |
+| Observability (LangSmith, RAGAS) | Quality gate for full system — Milestone 2 |
+| Frontend beyond minimal API client | CLI / curl / Postman sufficient to prove the pipeline |
 
 ## Traceability
 
-Populated by roadmapper agent — 2026-06-27.
+Populated by roadmapper agent.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AUTH-01 | Phase 1 | Pending |
-| AUTH-02 | Phase 1 | Pending |
-| AUTH-03 | Phase 1 | Pending |
-| INGEST-01 | Phase 2 | Pending |
-| INGEST-02 | Phase 2 | Pending |
-| INGEST-03 | Phase 2 | Pending |
-| INGEST-04 | Phase 2 | Pending |
-| INGEST-05 | Phase 2 | Pending |
-| REQST-01 | Phase 3 | Pending |
-| REQST-02 | Phase 3 | Pending |
-| REQST-03 | Phase 3 | Pending |
-| REQST-04 | Phase 3 | Pending |
-| REQST-05 | Phase 3 | Pending |
-| REQST-06 | Phase 3 | Pending |
-| EXEC-01 | Phase 4 | Pending |
-| EXEC-02 | Phase 4 | Pending |
-| EXEC-03 | Phase 4 | Pending |
-| EXEC-04 | Phase 4 | Pending |
-| EXEC-05 | Phase 4 | Pending |
-| OBS-01 | Phase 4 | Pending |
-| MEMO-01 | Phase 5 | Pending |
-| MEMO-02 | Phase 5 | Pending |
-| MEMO-03 | Phase 5 | Pending |
-| MEMO-04 | Phase 5 | Pending |
-| MEMO-05 | Phase 5 | Pending |
-| MEMO-06 | Phase 5 | Pending |
-| OBS-02 | Phase 5 | Pending |
-| METRIC-01 | Phase 6 | Pending |
-| METRIC-02 | Phase 6 | Pending |
-| METRIC-03 | Phase 6 | Pending |
-| CHAT-01 | Phase 7 | Pending |
-| CHAT-02 | Phase 7 | Pending |
-| CHAT-03 | Phase 7 | Pending |
-| CHAT-04 | Phase 7 | Pending |
-| WATCH-01 | Phase 8 | Pending |
-| WATCH-02 | Phase 8 | Pending |
-| WATCH-03 | Phase 8 | Pending |
-| WATCH-04 | Phase 8 | Pending |
-| WATCH-09 | Phase 8 | Pending |
-| WATCH-10 | Phase 8 | Pending |
-| WATCH-05 | Phase 9 | Pending |
-| WATCH-06 | Phase 9 | Pending |
-| WATCH-07 | Phase 9 | Pending |
-| WATCH-08 | Phase 9 | Pending |
-| OBS-03 | Phase 9 | Pending |
+| AUTH-01 | TBD | Pending |
+| AUTH-02 | TBD | Pending |
+| AUTH-03 | TBD | Pending |
+| INGEST-01 | TBD | Pending |
+| INGEST-02 | TBD | Pending |
+| INGEST-03 | TBD | Pending |
+| INGEST-04 | TBD | Pending |
+| INGEST-05 | TBD | Pending |
+| REQST-01 | TBD | Pending |
+| REQST-02 | TBD | Pending |
+| REQST-03 | TBD | Pending |
+| REQST-04 | TBD | Pending |
+| REQST-05 | TBD | Pending |
+| REQST-06 | TBD | Pending |
+| EXEC-02 | TBD | Pending |
+| EXEC-03 | TBD | Pending |
+| MEMO-01 | TBD | Pending |
+| MEMO-02 | TBD | Pending |
+| MEMO-03 | TBD | Pending |
 
 **Coverage:**
-- v1 requirements: 45 total
-- Mapped to phases: 45/45
-- Unmapped: 0
+- v1 requirements: 19 total
+- Mapped to phases: TBD (populated by roadmapper)
+- Unmapped: TBD
 
 ---
 *Requirements defined: 2026-06-27*
-*Last updated: 2026-06-27 — traceability populated by roadmapper; 9 phases, 100% coverage*
+*Last updated: 2026-06-27 after Milestone v1.0 scope definition*
