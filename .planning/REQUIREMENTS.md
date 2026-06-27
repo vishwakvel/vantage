@@ -121,61 +121,61 @@
 
 ## Traceability
 
-Populated by roadmapper agent.
+Populated by roadmapper agent — 2026-06-27.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AUTH-01 | TBD | Pending |
-| AUTH-02 | TBD | Pending |
-| AUTH-03 | TBD | Pending |
-| REQST-01 | TBD | Pending |
-| REQST-02 | TBD | Pending |
-| REQST-03 | TBD | Pending |
-| REQST-04 | TBD | Pending |
-| REQST-05 | TBD | Pending |
-| REQST-06 | TBD | Pending |
-| EXEC-01 | TBD | Pending |
-| EXEC-02 | TBD | Pending |
-| EXEC-03 | TBD | Pending |
-| EXEC-04 | TBD | Pending |
-| EXEC-05 | TBD | Pending |
-| MEMO-01 | TBD | Pending |
-| MEMO-02 | TBD | Pending |
-| MEMO-03 | TBD | Pending |
-| MEMO-04 | TBD | Pending |
-| MEMO-05 | TBD | Pending |
-| MEMO-06 | TBD | Pending |
-| CHAT-01 | TBD | Pending |
-| CHAT-02 | TBD | Pending |
-| CHAT-03 | TBD | Pending |
-| CHAT-04 | TBD | Pending |
-| INGEST-01 | TBD | Pending |
-| INGEST-02 | TBD | Pending |
-| INGEST-03 | TBD | Pending |
-| INGEST-04 | TBD | Pending |
-| INGEST-05 | TBD | Pending |
-| METRIC-01 | TBD | Pending |
-| METRIC-02 | TBD | Pending |
-| METRIC-03 | TBD | Pending |
-| WATCH-01 | TBD | Pending |
-| WATCH-02 | TBD | Pending |
-| WATCH-03 | TBD | Pending |
-| WATCH-04 | TBD | Pending |
-| WATCH-05 | TBD | Pending |
-| WATCH-06 | TBD | Pending |
-| WATCH-07 | TBD | Pending |
-| WATCH-08 | TBD | Pending |
-| WATCH-09 | TBD | Pending |
-| WATCH-10 | TBD | Pending |
-| OBS-01 | TBD | Pending |
-| OBS-02 | TBD | Pending |
-| OBS-03 | TBD | Pending |
+| AUTH-01 | Phase 1 | Pending |
+| AUTH-02 | Phase 1 | Pending |
+| AUTH-03 | Phase 1 | Pending |
+| INGEST-01 | Phase 2 | Pending |
+| INGEST-02 | Phase 2 | Pending |
+| INGEST-03 | Phase 2 | Pending |
+| INGEST-04 | Phase 2 | Pending |
+| INGEST-05 | Phase 2 | Pending |
+| REQST-01 | Phase 3 | Pending |
+| REQST-02 | Phase 3 | Pending |
+| REQST-03 | Phase 3 | Pending |
+| REQST-04 | Phase 3 | Pending |
+| REQST-05 | Phase 3 | Pending |
+| REQST-06 | Phase 3 | Pending |
+| EXEC-01 | Phase 4 | Pending |
+| EXEC-02 | Phase 4 | Pending |
+| EXEC-03 | Phase 4 | Pending |
+| EXEC-04 | Phase 4 | Pending |
+| EXEC-05 | Phase 4 | Pending |
+| OBS-01 | Phase 4 | Pending |
+| MEMO-01 | Phase 5 | Pending |
+| MEMO-02 | Phase 5 | Pending |
+| MEMO-03 | Phase 5 | Pending |
+| MEMO-04 | Phase 5 | Pending |
+| MEMO-05 | Phase 5 | Pending |
+| MEMO-06 | Phase 5 | Pending |
+| OBS-02 | Phase 5 | Pending |
+| METRIC-01 | Phase 6 | Pending |
+| METRIC-02 | Phase 6 | Pending |
+| METRIC-03 | Phase 6 | Pending |
+| CHAT-01 | Phase 7 | Pending |
+| CHAT-02 | Phase 7 | Pending |
+| CHAT-03 | Phase 7 | Pending |
+| CHAT-04 | Phase 7 | Pending |
+| WATCH-01 | Phase 8 | Pending |
+| WATCH-02 | Phase 8 | Pending |
+| WATCH-03 | Phase 8 | Pending |
+| WATCH-04 | Phase 8 | Pending |
+| WATCH-09 | Phase 8 | Pending |
+| WATCH-10 | Phase 8 | Pending |
+| WATCH-05 | Phase 9 | Pending |
+| WATCH-06 | Phase 9 | Pending |
+| WATCH-07 | Phase 9 | Pending |
+| WATCH-08 | Phase 9 | Pending |
+| OBS-03 | Phase 9 | Pending |
 
 **Coverage:**
-- v1 requirements: 46 total
-- Mapped to phases: TBD (populated by roadmapper)
-- Unmapped: TBD
+- v1 requirements: 45 total
+- Mapped to phases: 45/45
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-06-27*
-*Last updated: 2026-06-27 after initial definition*
+*Last updated: 2026-06-27 — traceability populated by roadmapper; 9 phases, 100% coverage*
