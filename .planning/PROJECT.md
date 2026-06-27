@@ -4,6 +4,18 @@
 
 A multi-agent LangGraph platform that takes a free-text research request (ticker, investment thesis, or financial question) and produces a fully cited `ResearchMemo` in minutes via seven specialized AI agents backed by a multi-source RAG pipeline (SEC EDGAR, FRED, yfinance, NewsAPI, arXiv, user PDFs). Designed for individual investors and small teams who need institutional-quality research without the institutional budget. The standout differentiator: a structured Contradictions panel that explicitly surfaces where agents disagree — no silent conflict resolution.
 
+## Current Milestone: v1.0 Walking Skeleton
+
+**Goal:** Prove the full research pipeline works end-to-end — request → EDGAR ingest → hybrid RAG → 2 agents → ResearchMemo.
+
+**Target features:**
+- Phase 1: Foundation & Auth — scaffold, Docker Compose, JWT, Company entity, Groq rate limiter, EDGAR User-Agent client
+- Phase 2: Document Ingestion — EDGAR auto-fetch, hybrid RAG (dense + BM25 + reranker), dedup via canonical_id, caching, private doc isolation
+- Phase 3: Request & Disambiguation — free-text intake, confidence-gated ticker extraction, ClarificationResponse panel, multi-ticker, PDF upload
+- Phase 4: Minimal Agent Run — FundamentalAnalysis + Synthesis wired into LangGraph, producing a structured ResearchMemo (scoped subset of EXEC+MEMO — proves pipeline end-to-end)
+
+**Out of scope for v1.0:** Remaining 5 agents (SentimentNLP, RiskAssessment, MacroSector, ComparableCompanies, Orchestrator full routing), WebSocket progress panel, async Celery layer, chat sessions, watchlist/alerts, observability (Phases 5–9).
+
 ## Core Value
 
 Given a ticker or investment thesis, produce a fully cited ResearchMemo with explicit Contradictions — in minutes, not the 8-12 hours a junior analyst needs.
@@ -91,4 +103,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-27 after initialization*
+*Last updated: 2026-06-27 after Milestone v1.0 start*
