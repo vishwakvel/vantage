@@ -13,7 +13,7 @@ Milestone v1.0 proves the full research pipeline works end-to-end: request → E
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation & Auth** - Docker Compose scaffold, JWT auth, Groq rate limiter, EDGAR client, Company entity, section_constants
+- [x] **Phase 1: Foundation & Auth** - Docker Compose scaffold, JWT auth, Groq rate limiter, EDGAR client, Company entity, section_constants (completed 2026-06-27)
 - [ ] **Phase 2: Document Ingestion Pipeline** - Auto-fetch SEC filings, hybrid RAG (dense + BM25 + reranker), caching, private doc isolation, deduplication
 - [ ] **Phase 3: Research Request & Disambiguation** - Free-text intake, confidence-gated ticker extraction, ClarificationResponse, multi-ticker, PDF upload, ResearchPlan
 - [ ] **Phase 4: Minimal Agent Run** - FundamentalAnalysis + Synthesis in LangGraph, sync execution, structured cited ResearchMemo end-to-end
@@ -53,7 +53,7 @@ Plans:
 - [x] 01-05-PLAN.md — Auth API endpoints: dependencies.py (get_current_user), auth router (register/login/logout/me), wire into main.py
 - [x] 01-06-PLAN.md — Service stubs: Groq async token-bucket rate limiter, EDGAR HTTP client (User-Agent), section_constants.py
 - [x] 01-07-PLAN.md — Auth integration tests: conftest.py fixtures, 12 endpoint tests covering all SPEC ACs and prohibitions
-- [ ] 01-08-PLAN.md — Boundary & service tests: import guard, Redis TTL/503, EDGAR User-Agent mock, rate limiter, migration smoke test
+- [x] 01-08-PLAN.md — Boundary & service tests: import guard, Redis TTL/503, EDGAR User-Agent mock, rate limiter, migration smoke test
 
 ### Phase 2: Document Ingestion Pipeline
 
@@ -110,7 +110,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & Auth | 7/8 | In Progress|  |
+| 1. Foundation & Auth | 8/8 | Complete    | 2026-06-27 |
 | 2. Document Ingestion Pipeline | 0/? | Not started | - |
 | 3. Research Request & Disambiguation | 0/? | Not started | - |
 | 4. Minimal Agent Run | 0/? | Not started | - |
