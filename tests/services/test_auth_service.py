@@ -45,7 +45,7 @@ def _make_user(email: str = "user@example.com", password: str = "hashed-pw"):
 
 
 class TestRegisterUser:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_new_email_returns_tuple(self):
         from app.services.auth_service import register_user
 
@@ -70,7 +70,7 @@ class TestRegisterUser:
         assert isinstance(jti, str)
         assert isinstance(exp, int)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_duplicate_email_raises_409(self):
         from app.services.auth_service import register_user
 
@@ -88,7 +88,7 @@ class TestRegisterUser:
 
         assert exc_info.value.status_code == 409
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_register_calls_hash_password(self):
         from app.services.auth_service import register_user
 
@@ -114,7 +114,7 @@ class TestRegisterUser:
 
 
 class TestLoginUser:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_correct_credentials_returns_tuple(self):
         from app.services.auth_service import login_user
 
@@ -134,7 +134,7 @@ class TestLoginUser:
 
         assert len(result) == 3
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_wrong_password_raises_401(self):
         from app.services.auth_service import login_user
 
@@ -151,7 +151,7 @@ class TestLoginUser:
 
         assert exc_info.value.status_code == 401
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_unknown_email_raises_401(self):
         from app.services.auth_service import login_user
 
@@ -166,7 +166,7 @@ class TestLoginUser:
 
         assert exc_info.value.status_code == 401
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_same_error_message_for_bad_creds(self):
         """User-not-found and wrong-password must return identical detail strings (T-01-04-04)."""
         from app.services.auth_service import login_user
@@ -202,7 +202,7 @@ class TestLoginUser:
 
 
 class TestLogoutUser:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_calls_redis_set_with_revoked_key(self):
         from app.services.auth_service import logout_user
 
@@ -217,7 +217,7 @@ class TestLogoutUser:
         # Key must be "revoked:{jti}"
         assert call_kwargs[0][0] == f"revoked:{jti}" or call_kwargs[1].get("key") == f"revoked:{jti}"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_redis_set_ttl_is_positive(self):
         from app.services.auth_service import logout_user
 
@@ -235,7 +235,7 @@ class TestLogoutUser:
         assert ex_value is not None
         assert ex_value >= 1, f"TTL must be >= 1, got {ex_value}"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_redis_error_raises_503(self):
         from app.services.auth_service import logout_user
 
@@ -250,7 +250,7 @@ class TestLogoutUser:
 
         assert exc_info.value.status_code == 503
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_expired_token_uses_minimum_ttl(self):
         """For already-expired tokens, TTL must be >= 1 (Redis requires positive ex)."""
         from app.services.auth_service import logout_user
@@ -273,7 +273,7 @@ class TestLogoutUser:
 
 
 class TestIsTokenRevoked:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_returns_true_when_key_exists(self):
         from app.services.auth_service import is_token_revoked
 
@@ -283,7 +283,7 @@ class TestIsTokenRevoked:
         result = await is_token_revoked("some-jti", redis_client)
         assert result is True
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_returns_false_when_key_absent(self):
         from app.services.auth_service import is_token_revoked
 
@@ -293,7 +293,7 @@ class TestIsTokenRevoked:
         result = await is_token_revoked("some-jti", redis_client)
         assert result is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_checks_correct_redis_key(self):
         from app.services.auth_service import is_token_revoked
 
