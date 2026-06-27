@@ -18,9 +18,7 @@ def create_app() -> FastAPI:
     Lifespan stubs (startup/shutdown) are defined here; populated in later
     plans as services come online.
 
-    The v1 router is imported with a guard so that the empty
-    ``app/api/v1/__init__.py`` in this plan does not break the factory.
-    Plan 01-05 populates the router and removes the guard.
+    The v1 router (plan 01-05) is imported and mounted at ``/api/v1``.
     """
 
     @asynccontextmanager
@@ -44,14 +42,10 @@ def create_app() -> FastAPI:
         """Liveness probe — returns 200 OK when the app is running."""
         return {"status": "ok"}
 
-    # Router is wired in plan 01-05; guard prevents import errors on the
-    # empty __init__.py that exists at this stage of the build.
-    try:
-        from app.api.v1 import router as v1_router  # noqa: PLC0415
+    # Auth API routes — wired in plan 01-05.
+    from app.api.v1 import router as v1_router  # noqa: PLC0415
 
-        application.include_router(v1_router, prefix="/api/v1")
-    except ImportError:
-        pass  # Router not yet wired — populated in plan 01-05
+    application.include_router(v1_router, prefix="/api/v1")
 
     return application
 
