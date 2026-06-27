@@ -1,12 +1,12 @@
 ---
-gsd_state_version: 1.0
+gsd_state_version: '1.0'
 milestone: v1.0
 milestone_name: Walking Skeleton
 status: planning
-last_updated: "2026-06-27T10:49:35.167Z"
+last_updated: "2026-06-27"
 last_activity: 2026-06-27
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -24,15 +24,16 @@ See: .planning/PROJECT.md (updated 2026-06-27)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 0 of 4 (not started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-06-27 — Milestone v1.0 started
+Status: Ready to plan Phase 1
+Last activity: 2026-06-27 — Roadmap created, 4 phases, 19 requirements mapped
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **Velocity:**
-
 - Total plans completed: 0
 - Average duration: —
 - Total execution time: 0 hours
@@ -44,7 +45,6 @@ Last activity: 2026-06-27 — Milestone v1.0 started
 | — | — | — | — |
 
 **Recent Trend:**
-
 - Last 5 plans: —
 - Trend: —
 
@@ -57,11 +57,12 @@ Last activity: 2026-06-27 — Milestone v1.0 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Day-one: Groq rate limiter is non-negotiable — no direct Groq calls anywhere
-- Day-one: EDGAR User-Agent header required on every request
-- Day-one: Company entity (ticker PK) must be established before any FK references to ticker
-- Day-one: section_constants.py is the single source of truth for section string literals
-- Day-one: All external API calls live in app/services/ only
+- Day-one: Groq rate limiter is non-negotiable — no direct Groq calls anywhere; CI enforced
+- Day-one: EDGAR User-Agent header (`Vantage/1.0 vishwak.vel@gmail.com`) required on every request
+- Day-one: Company entity (ticker PK) must be established before any FK reference to ticker
+- Day-one: section_constants.py is the single source of truth for all section string literals
+- Day-one: All external API calls live in app/services/ only — never inline in agents
+- Phase 4 is sync-only: no WebSocket, no Celery — curl/Postman sufficient to verify walking skeleton
 
 ### Pending Todos
 
@@ -75,10 +76,17 @@ None yet.
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| Agent suite | 5 remaining agents (SentimentNLP, RiskAssessment, MacroSector, ComparableCompanies, full Orchestrator) | Milestone 2 | v1.0 scope |
+| Execution | WebSocket live progress panel (EXEC-01) | Milestone 2 | v1.0 scope |
+| Execution | Async Celery research tasks (EXEC-04, EXEC-05) | Milestone 2 | v1.0 scope |
+| Memo | Contradictions panel, cost display, PARTIAL status badge (MEMO-04, MEMO-05, MEMO-06) | Milestone 2 | v1.0 scope |
+| Chat | Follow-up session layer (CHAT-01 through CHAT-04) | Milestone 2 | v1.0 scope |
+| Metrics | Financial metrics + anomaly detection (METRIC-01 through METRIC-03) | Milestone 2 | v1.0 scope |
+| Watchlist | All watchlist and alert features (WATCH-01 through WATCH-10) | Milestone 2 | v1.0 scope |
+| Observability | LangSmith traces, RAGAS eval, cost breakdown (OBS-01 through OBS-03) | Milestone 2 | v1.0 scope |
 
 ## Session Continuity
 
 Last session: 2026-06-27
-Stopped at: Roadmap created — 9 phases, 45 requirements, all mapped. Ready to plan Phase 1.
+Stopped at: Roadmap created — 4 phases, 19 v1 requirements mapped. Ready to plan Phase 1.
 Resume file: None
