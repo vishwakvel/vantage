@@ -9,3 +9,11 @@ build/
 .coverage
 htmlcov/
 .mypy_cache/
+
+# GSD planning & AI tooling — not part of the app
+.claude/
+.planning/
+CLAUDE.md
+CONTEXT.md
+docs/
+pyrefly.toml
