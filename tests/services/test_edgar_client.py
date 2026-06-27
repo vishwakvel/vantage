@@ -9,7 +9,7 @@ Tests verify:
   - Required section constants are importable and non-empty
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -20,7 +20,6 @@ from app.services.edgar_client import (
     EDGARClient,
     edgar_client,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -179,8 +178,8 @@ def test_section_constants_required_imports() -> None:
         SECTION_FINANCIALS,
         SECTION_FUNDAMENTALS,
         SECTION_MDA,
-        SECTION_RISKS,
         SECTION_RISK_FACTORS,
+        SECTION_RISKS,
         SECTION_SYNTHESIS,
     )
 
