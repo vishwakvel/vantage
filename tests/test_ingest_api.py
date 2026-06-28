@@ -23,9 +23,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import Settings
 from app.core.dependencies import get_current_user
+from app.db.session import get_session
 from app.main import create_app
 from app.services.ingestion_service import IngestionResult
+
+# ---------------------------------------------------------------------------
+# Minimal settings for tests (no real DB/Redis required)
+# ---------------------------------------------------------------------------
+
+_TEST_SETTINGS = Settings(
+    DATABASE_URL="postgresql+asyncpg://test:test@localhost:5433/test",
+    REDIS_URL="redis://localhost:6379/1",
+    JWT_SECRET_KEY="test-jwt-secret",
+    JWT_ALGORITHM="HS256",
+    JWT_ACCESS_TOKEN_EXPIRE_SECONDS=86400,
+)
 
 # ---------------------------------------------------------------------------
 # URL constants
@@ -48,20 +62,43 @@ def _make_fake_user() -> MagicMock:
     return user
 
 
+def _mock_session():
+    """Async generator yielding a MagicMock session (no real DB connection)."""
+    async def _gen():
+        yield MagicMock()
+    return _gen()
+
+
 def _make_app_with_auth_override():
-    """Create a TestClient whose get_current_user is patched to a fake user.
+    """Create a TestClient whose get_current_user and get_session are mocked.
+
+    Overrides:
+    - get_current_user: returns a fake User with a predictable id
+    - get_session: yields a MagicMock (no real DB)
+    - get_settings: returns _TEST_SETTINGS (no env-var resolution)
 
     Returns:
         (app, TestClient) tuple — app exposed so tests can add extra overrides.
     """
+    from app.core.config import get_settings  # local import to avoid circular issues
+
     application = create_app()
     application.dependency_overrides[get_current_user] = lambda: _make_fake_user()
+    application.dependency_overrides[get_session] = _mock_session
+    application.dependency_overrides[get_settings] = lambda: _TEST_SETTINGS
     return application, TestClient(application, raise_server_exceptions=True)
 
 
 def _make_app_no_auth():
-    """Create a TestClient with NO get_current_user override (requires real JWT)."""
+    """Create a TestClient with NO get_current_user override (requires real JWT).
+
+    get_session and get_settings are still mocked so no real DB/env is needed.
+    """
+    from app.core.config import get_settings
+
     application = create_app()
+    application.dependency_overrides[get_session] = _mock_session
+    application.dependency_overrides[get_settings] = lambda: _TEST_SETTINGS
     return application, TestClient(application, raise_server_exceptions=False)
 
 
