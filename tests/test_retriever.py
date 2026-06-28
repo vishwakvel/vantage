@@ -143,13 +143,29 @@ class TestBM25Rank:
         assert len(indices) == 3
 
     def test_bm25_rank_case_insensitive(self):
-        """Tokenisation is lower().split() so case does not affect ranking."""
+        """Tokenisation is lower().split() so case does not affect ranking.
+
+        Uses a 4-doc corpus so the query term appears in <50% of docs and BM25
+        IDF is positive (avoids the log(1.5/1.5)=0 IDF edge case with 2 docs
+        where the term appears in exactly 1 of them).
+        """
         from app.ingestion.retriever import bm25_rank
 
-        candidates = ["Revenue grew", "unrelated text here"]
-        # Query in upper-case; match should still find index 0
-        indices = bm25_rank("REVENUE", candidates)
-        assert indices[0] == 0
+        candidates = [
+            "Revenue grew significantly",           # 0 — contains "revenue"
+            "unrelated text here",                  # 1 — no match
+            "net income declined last quarter",     # 2 — no match
+            "operating expenses increased",         # 3 — no match
+        ]
+        # Query in upper-case; tokenised to lowercase → should match index 0
+        lower_indices = bm25_rank("revenue", candidates)
+        upper_indices = bm25_rank("REVENUE", candidates)
+        # Both queries should produce the same ranking (case-insensitive)
+        assert lower_indices == upper_indices, (
+            "BM25 ranking must be identical for 'revenue' and 'REVENUE'"
+        )
+        # And both should rank the matching doc first
+        assert lower_indices[0] == 0, f"Matching doc (index 0) should rank first; got {lower_indices}"
 
     def test_bm25_rank_single_candidate(self):
         """Single candidate always returns [0]."""
