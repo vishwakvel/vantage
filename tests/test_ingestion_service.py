@@ -166,12 +166,19 @@ def _make_html_resp(html: str = _FILING_HTML) -> MagicMock:
 
 
 def _make_session_mock(existing_canonical_ids: list[str] | None = None) -> AsyncMock:
-    """Return an AsyncMock session whose execute() returns *existing_canonical_ids*."""
+    """Return an AsyncMock session whose execute() returns *existing_canonical_ids*.
+
+    ``add`` is overridden with a plain ``MagicMock`` because ``AsyncSession.add()``
+    is synchronous in SQLAlchemy — using AsyncMock would produce unawaited-coroutine
+    RuntimeWarnings since the production code calls ``session.add(obj)`` without await.
+    """
     mock_session = AsyncMock()
     exec_result = MagicMock()
     rows = [(cid,) for cid in (existing_canonical_ids or [])]
     exec_result.fetchall.return_value = rows
     mock_session.execute.return_value = exec_result
+    # add() is synchronous — replace the AsyncMock attribute with a plain MagicMock
+    mock_session.add = MagicMock()
     return mock_session
 
 
