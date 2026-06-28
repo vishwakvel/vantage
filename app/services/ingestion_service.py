@@ -1,10 +1,14 @@
-"""Ingestion service — SEC public filing slice end-to-end.
+"""Ingestion service — SEC public filing slice + private PDF slice.
 
 ``ingest_ticker(ticker, session)`` resolves recent 10-K/10-Q filings via
 EDGAR, deduplicates by canonical_id, chunks, embeds, and stores into
 ChromaDB + PostgreSQL, returning a non-fatal ``IngestionResult``.
 
-Design principles (02-RESEARCH.md / PLAN 02-03):
+``ingest_pdf(file_bytes, user_id, ticker, form_type, period_of_report, session)``
+extracts text from a user-uploaded PDF via PyMuPDF, chunks it through the same
+pipeline, and stores chunks tagged with the uploading user's ``user_id``.
+
+Design principles (02-RESEARCH.md / PLAN 02-03, 02-05):
   - Ticker validation: uppercase, 1-10 alphanumerics, BEFORE any EDGAR call
     → mitigates SSRF (T-02-02)
   - compute_canonical_id: sha256(f"{TICKER}:{form_type}:{period_of_report}")
@@ -18,12 +22,15 @@ Design principles (02-RESEARCH.md / PLAN 02-03):
     rate limiting)
   - Public filings: user_id="" in ChromaDB metadata; Document.user_id=None
     in PostgreSQL (INGEST-03 boundary)
+  - Private PDFs: user_id=<uuid> in ChromaDB metadata; Document.user_id=uuid
+    in PostgreSQL (INGEST-03 boundary)
+  - PDF bytes > 50 MB rejected before fitz.open (T-02-03 DoS mitigation)
   - All EDGAR access through ``edgar_client`` only — direct HTTP calls are
     prohibited throughout the codebase
 
 Public API::
 
-    from app.services.ingestion_service import ingest_ticker, IngestionResult
+    from app.services.ingestion_service import ingest_ticker, ingest_pdf, IngestionResult
 
 Private helpers (importable for testing)::
 
@@ -39,6 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import fitz  # PyMuPDF — lazy at call time; module-level import enables monkeypatching in tests
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,6 +54,13 @@ from app.db.models import Document, DocumentChunk, DocumentSourceType, DocumentV
 from app.ingestion.chunker import section_aware_chunk
 from app.services.edgar_client import edgar_client
 from app.services.vector_store import canonical_exists, embed_and_store
+
+# ---------------------------------------------------------------------------
+# PDF ingestion constants
+# ---------------------------------------------------------------------------
+
+#: Maximum bytes accepted before parse; guards against adversarial large PDFs (T-02-03).
+_MAX_PDF_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
 # ---------------------------------------------------------------------------
 # Ticker validation
@@ -381,4 +396,144 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
         if i < len(hits) - 1:
             await asyncio.sleep(0.1)
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Public API — ingest_pdf  (INGEST-03, INGEST-05)
+# ---------------------------------------------------------------------------
+
+
+async def ingest_pdf(
+    file_bytes: bytes,
+    user_id: str,
+    ticker: str,
+    form_type: str,
+    period_of_report: str,
+    session: AsyncSession,
+) -> IngestionResult:
+    """Ingest a private user-uploaded PDF filing into ChromaDB + PostgreSQL.
+
+    Extracts text via PyMuPDF, runs the same section-aware chunking pipeline as
+    ``ingest_ticker``, and stores chunks tagged with ``user_id`` so ChromaDB
+    ``where={"user_id": ...}`` isolation enforces INGEST-03.  Uses the identical
+    ``compute_canonical_id`` formula so a PDF of an already-EDGAR-indexed filing
+    is detected as cached (INGEST-05).
+
+    Flow:
+      1. Validate + uppercase the ticker (T-02-02 SSRF guard).
+      2. Reject ``file_bytes`` over 50 MB before parse (T-02-03 DoS mitigation).
+      3. Extract text via ``fitz.open(stream=file_bytes, filetype="pdf")``; on any
+         parse error append a ``source_warning`` and return (INGEST-04 pattern).
+      4. Compute ``canonical_id`` and check ``canonical_exists``; if True, return
+         with ``filings_cached += 1`` — **no duplicate chunk set** (INGEST-05).
+      5. ``section_aware_chunk`` the plain text; build chunk IDs as
+         ``"{canonical_id}:{user_id}:{chunk_index}"`` for per-user namespacing.
+      6. ``embed_and_store`` with ``user_id=str(user_id)`` in every chunk metadata
+         (never empty-string; never None — ChromaDB 0.5.x guard).
+      7. Persist ``Document(source_type=USER_UPLOAD, visibility=PRIVATE, user_id=…)``
+         and ``DocumentChunk`` rows to PostgreSQL.
+
+    Args:
+        file_bytes:       Raw PDF bytes from the upload (UploadFile.read()).
+        user_id:          UUID string of the uploading user (must be non-empty).
+        ticker:           Ticker symbol (case-insensitive; uppercased before use).
+        form_type:        SEC form type, e.g. ``"10-K"`` or ``"10-Q"``.
+        period_of_report: ISO date of the reporting period, e.g. ``"2023-09-30"``.
+        session:          SQLAlchemy async session for PostgreSQL writes.
+
+    Returns:
+        ``IngestionResult`` — never raises; failures surface as ``source_warnings``.
+
+    Raises:
+        ValueError: If *ticker* contains invalid characters (T-02-02).
+    """
+    ticker = _validate_ticker(ticker)
+    result = IngestionResult(ticker=ticker)
+
+    # --- DoS mitigation: 50 MB cap BEFORE parse (T-02-03) ---
+    if len(file_bytes) > _MAX_PDF_BYTES:
+        result.source_warnings.append(
+            f"PDF exceeds 50 MB limit ({len(file_bytes):,} bytes) "
+            f"for {ticker} {form_type} {period_of_report} — skipped"
+        )
+        return result
+
+    # --- Extract text via fitz (PyMuPDF, D-11) ---
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        pages = [page.get_text() for page in doc]
+        doc.close()
+        text = "\n".join(pages)
+    except Exception as exc:
+        result.source_warnings.append(
+            f"PDF parse failed for {ticker} {form_type} {period_of_report}: {exc}"
+        )
+        return result
+
+    if not text.strip():
+        result.source_warnings.append(
+            f"PDF produced no extractable text for {ticker} {form_type} {period_of_report}"
+        )
+        return result
+
+    # --- Dedup check — same canonical_id formula as EDGAR path (INGEST-05) ---
+    canonical_id = compute_canonical_id(ticker, form_type, period_of_report)
+    if canonical_exists(canonical_id):
+        result.filings_cached += 1
+        return result
+
+    # --- Chunk the plain text through the shared pipeline ---
+    # user_id=str(user_id) — private chunk; never "" (ChromaDB 0.5.x None guard)
+    base_metadata: dict[str, Any] = {
+        "canonical_id": canonical_id,
+        "ticker": ticker,
+        "form_type": form_type,
+        "period_of_report": period_of_report,
+        "user_id": str(user_id),
+    }
+    chunks = section_aware_chunk(text, base_metadata)
+    if not chunks:
+        result.source_warnings.append(
+            f"No chunks produced for {ticker} {form_type} {period_of_report}"
+        )
+        return result
+
+    # --- Embed and store in ChromaDB with user-namespaced IDs ---
+    # ID format: "{canonical_id}:{user_id}:{chunk_index}" — unique per (filing, user, chunk)
+    ids = [
+        f"{canonical_id}:{user_id}:{chunk['metadata']['chunk_index']}"
+        for chunk in chunks
+    ]
+    texts = [chunk["text"] for chunk in chunks]
+    metadatas = [chunk["metadata"] for chunk in chunks]
+    embed_and_store(ids=ids, texts=texts, metadatas=metadatas)
+
+    # --- Persist Document + DocumentChunk rows to PostgreSQL ---
+    doc_row = Document(
+        canonical_id=canonical_id,
+        user_id=user_id,  # private upload — user_id set in PostgreSQL
+        ticker=ticker,
+        source_type=DocumentSourceType.USER_UPLOAD,
+        visibility=DocumentVisibility.PRIVATE,
+        title=f"{ticker} {form_type} {period_of_report}",
+        url=None,  # no SEC URL for private uploads
+        fetched_at=datetime.now(timezone.utc),
+    )
+    session.add(doc_row)
+    await session.flush()  # populate doc_row.id from PostgreSQL gen_random_uuid()
+
+    for chunk_text, meta, chunk_id in zip(texts, metadatas, ids):
+        doc_chunk = DocumentChunk(
+            document_id=doc_row.id,
+            ticker=ticker,
+            section=meta["section"],
+            chunk_index=meta["chunk_index"],
+            content=chunk_text,
+            embedding_id=chunk_id,
+        )
+        session.add(doc_chunk)
+
+    await session.commit()
+    result.filings_ingested += 1
     return result
