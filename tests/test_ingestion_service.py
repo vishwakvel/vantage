@@ -70,6 +70,7 @@ def test_canonical_id_dedup():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.anyio
 async def test_dedup_guard_no_edgar_call():
     """_ingest_one_filing makes no EDGAR call when canonical_exists returns True.
 
