@@ -13,6 +13,11 @@ Coverage:
   - test_ingest_ticker_dedup_skips_edgar — second run: 0 EDGAR calls (INGEST-02)
   - test_edgar_failure_returns_warning — failure → source_warnings, no exception (INGEST-04)
   - test_invalid_ticker_rejected       — "../etc" rejected before any EDGAR call
+
+  Plan 05 Task 1 — ingest_pdf private slice (added in RED):
+  - test_ingest_pdf_user_scoped        — chunks tagged with uploader's user_id (INGEST-03)
+  - test_pdf_failure_returns_warning   — unparseable PDF → source_warning, no exception
+  - test_pdf_oversized_rejected        — >50 MB bytes rejected before fitz.open (T-02-03)
 """
 
 from __future__ import annotations
@@ -301,3 +306,143 @@ async def test_invalid_ticker_rejected():
 
     mock_edgar.get.assert_not_called()
     mock_edgar.get_archive.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Plan 05 Task 1 RED: ingest_pdf — user-scoped private PDF slice
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_ingest_pdf_user_scoped():
+    """ingest_pdf stores chunks tagged with the uploader's user_id (INGEST-03).
+
+    Asserts:
+    - All chunk metadatas carry user_id equal to the uploader's uuid (non-empty)
+    - Chunk IDs include the user_id for per-user namespacing
+    - Chunk IDs include the canonical_id (same formula as ingest_ticker — INGEST-05)
+    - IngestionResult.filings_ingested == 1 and source_warnings is empty
+    - fitz.open is called (text extraction happened)
+    """
+    from app.services.ingestion_service import ingest_pdf  # fails in RED: function not yet defined
+
+    user_id = "user-a-uuid-1234"
+    mock_session = _make_session_mock(existing_canonical_ids=[])
+
+    # Build a mock fitz document: one page returning SEC-like text with an Item 7 section
+    mock_page = MagicMock()
+    mock_page.get_text.return_value = (
+        "Item 7 Management Discussion revenues grew thirty percent "
+        "fiscal year two thousand twenty three driven by iPhone services expanding."
+    )
+    mock_doc = MagicMock()
+    mock_doc.__iter__ = MagicMock(return_value=iter([mock_page]))
+
+    with (
+        patch("app.services.ingestion_service.canonical_exists", return_value=False),
+        patch("app.services.ingestion_service.embed_and_store") as mock_embed,
+        patch("app.services.ingestion_service.fitz") as mock_fitz,
+    ):
+        mock_fitz.open.return_value = mock_doc
+        result = await ingest_pdf(
+            file_bytes=b"fake-pdf-content",
+            user_id=user_id,
+            ticker="AAPL",
+            form_type="10-K",
+            period_of_report="2023-09-30",
+            session=mock_session,
+        )
+
+    assert result.filings_ingested == 1
+    assert result.source_warnings == []
+
+    # embed_and_store must have been called exactly once (one filing, one batch)
+    mock_embed.assert_called_once()
+    call_kwargs = mock_embed.call_args.kwargs
+    metadatas = call_kwargs["metadatas"]
+    ids = call_kwargs["ids"]
+
+    # All chunks must carry the uploader's user_id (INGEST-03 boundary)
+    assert all(m["user_id"] == user_id for m in metadatas), (
+        "Private chunks must be tagged with the uploader's user_id"
+    )
+    # user_id must be non-empty (never empty string like public filings)
+    assert all(m["user_id"] != "" for m in metadatas)
+
+    # Chunk IDs must include user_id for per-user namespacing
+    assert all(user_id in chunk_id for chunk_id in ids), (
+        "Chunk IDs must contain user_id for per-user namespacing"
+    )
+    # Chunk IDs must also include canonical_id — same formula as ingest_ticker (INGEST-05)
+    expected_canonical = compute_canonical_id("AAPL", "10-K", "2023-09-30")
+    assert all(expected_canonical in chunk_id for chunk_id in ids), (
+        "Chunk IDs must embed canonical_id to share dedup key with EDGAR path"
+    )
+
+    # fitz.open must have been called (text extraction path exercised)
+    mock_fitz.open.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_pdf_failure_returns_warning():
+    """An unparseable PDF returns IngestionResult with source_warnings; no exception raised.
+
+    Simulates fitz.open raising on corrupt/invalid PDF bytes.
+    ingest_pdf must catch the parse error and return normally (INGEST-04 pattern).
+    """
+    from app.services.ingestion_service import ingest_pdf  # fails in RED: function not yet defined
+
+    mock_session = _make_session_mock()
+
+    with (
+        patch("app.services.ingestion_service.canonical_exists", return_value=False),
+        patch("app.services.ingestion_service.embed_and_store") as mock_embed,
+        patch("app.services.ingestion_service.fitz") as mock_fitz,
+    ):
+        mock_fitz.open.side_effect = Exception("Corrupt PDF stream")
+
+        # Must NOT raise — parse failures become source_warnings (INGEST-04)
+        result = await ingest_pdf(
+            file_bytes=b"not-a-real-pdf",
+            user_id="user-a-uuid-1234",
+            ticker="AAPL",
+            form_type="10-K",
+            period_of_report="2023-09-30",
+            session=mock_session,
+        )
+
+    assert result.source_warnings, "source_warnings must be non-empty on PDF parse failure"
+    assert result.filings_ingested == 0
+    mock_embed.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_pdf_oversized_rejected():
+    """PDF bytes over 50 MB are rejected before fitz.open is called (T-02-03 DoS guard).
+
+    ingest_pdf must check len(file_bytes) > 50 MB BEFORE calling fitz.open to avoid
+    parsing an adversarially large file (T-02-03).
+    """
+    from app.services.ingestion_service import ingest_pdf  # fails in RED: function not yet defined
+
+    mock_session = _make_session_mock()
+    # 50 MB + 1 byte — just over the threshold
+    oversized_bytes = b"x" * (50 * 1024 * 1024 + 1)
+
+    with (
+        patch("app.services.ingestion_service.fitz") as mock_fitz,
+        patch("app.services.ingestion_service.embed_and_store") as mock_embed,
+    ):
+        result = await ingest_pdf(
+            file_bytes=oversized_bytes,
+            user_id="user-a-uuid-1234",
+            ticker="AAPL",
+            form_type="10-K",
+            period_of_report="2023-09-30",
+            session=mock_session,
+        )
+
+    # fitz.open must NOT be called for oversized files (reject before parse)
+    mock_fitz.open.assert_not_called()
+    mock_embed.assert_not_called()
+    assert result.source_warnings, "Oversized PDF must produce a source_warning"
