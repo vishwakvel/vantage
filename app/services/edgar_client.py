@@ -18,13 +18,22 @@ import httpx
 EDGAR_USER_AGENT: str = "Vantage/1.0 vishwak.vel@gmail.com"
 EDGAR_BASE_URL: str = "https://efts.sec.gov"
 
+# SEC Archives host — different base URL from the EFTS search endpoint.
+# Filing HTML content lives at https://www.sec.gov/Archives/edgar/data/…
+# Use get_archive() to download from this host; do not call get() for Archives paths.
+EDGAR_ARCHIVES_URL: str = "https://www.sec.gov"
+
 
 class EDGARClient:
-    """Async HTTP client for the SEC EDGAR full-text search API.
+    """Async HTTP client for SEC EDGAR — both EFTS search and Archives download.
 
     Sets the required User-Agent header on every outbound request.  The
     header is configured at the httpx.AsyncClient level so it cannot be
     accidentally omitted by individual callers.
+
+    Two internal clients are maintained:
+      _client         — efts.sec.gov  (full-text search; used by get())
+      _archive_client — www.sec.gov   (filing documents; used by get_archive())
     """
 
     def __init__(self) -> None:
@@ -33,12 +42,17 @@ class EDGARClient:
             timeout=30.0,
             base_url=EDGAR_BASE_URL,
         )
+        self._archive_client: httpx.AsyncClient = httpx.AsyncClient(
+            headers={"User-Agent": EDGAR_USER_AGENT},
+            timeout=30.0,
+            base_url=EDGAR_ARCHIVES_URL,
+        )
 
     async def get(self, path: str, **kwargs: Any) -> httpx.Response:
-        """Send a GET request to the EDGAR API.
+        """Send a GET request to the EDGAR full-text search API (efts.sec.gov).
 
         Args:
-            path:    URL path relative to EDGAR_BASE_URL (e.g. '/search').
+            path:    URL path relative to EDGAR_BASE_URL (e.g. '/LATEST/search-index').
             **kwargs: Passed through to httpx.AsyncClient.get().
 
         Returns:
@@ -46,9 +60,27 @@ class EDGARClient:
         """
         return await self._client.get(path, **kwargs)
 
+    async def get_archive(self, path: str, **kwargs: Any) -> httpx.Response:
+        """Download a filing document from the SEC Archives (www.sec.gov).
+
+        The Archives host is separate from the EFTS search host.  This method
+        carries the same mandatory Vantage User-Agent header as get() to
+        prevent 403/429 responses from the SEC rate limiter.
+
+        Args:
+            path:    URL path relative to EDGAR_ARCHIVES_URL, e.g.
+                     '/Archives/edgar/data/{cik}/{accession}/{doc}'.
+            **kwargs: Passed through to httpx.AsyncClient.get().
+
+        Returns:
+            The httpx.Response containing the raw filing document (HTML or text).
+        """
+        return await self._archive_client.get(path, **kwargs)
+
     async def close(self) -> None:
-        """Close the underlying httpx.AsyncClient connection pool."""
+        """Close both underlying httpx.AsyncClient connection pools."""
         await self._client.aclose()
+        await self._archive_client.aclose()
 
     async def __aenter__(self) -> "EDGARClient":
         return self

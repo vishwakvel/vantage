@@ -9,8 +9,10 @@ Import ``router`` from here and include it in the FastAPI application:
 from fastapi import APIRouter
 
 from app.api.v1.auth import router as auth_router
+from app.api.v1.ingest import router as ingest_router
 
 router = APIRouter()
 router.include_router(auth_router)
+router.include_router(ingest_router)
 
 __all__ = ["router"]
