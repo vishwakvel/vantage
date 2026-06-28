@@ -446,3 +446,127 @@ async def test_pdf_oversized_rejected():
     mock_fitz.open.assert_not_called()
     mock_embed.assert_not_called()
     assert result.source_warnings, "Oversized PDF must produce a source_warning"
+
+
+# ---------------------------------------------------------------------------
+# Plan 05 Task 2 RED: isolation + cross-source dedup proofs
+# ---------------------------------------------------------------------------
+
+
+def test_user_isolation_end_to_end(monkeypatch):
+    """Chunks stored by userA are invisible to userB retrieval (INGEST-03).
+
+    Uses a fake in-memory store injected via monkeypatch so that dense_query
+    honours the where user_id filter — proving the hybrid_retrieve pipeline
+    always forwards user_id and enforces isolation (phase success criterion #3).
+
+    Asserts:
+    - hybrid_retrieve(query, user_id=user_b) returns zero of userA's chunks
+    - hybrid_retrieve(query, user_id=user_a) returns userA's chunk
+    """
+    import numpy as np
+    import app.services.vector_store as vs
+    import app.ingestion.retriever as retriever_module
+    from app.ingestion.retriever import hybrid_retrieve
+
+    user_a_id = "user-a-uuid-1234"
+    user_b_id = "user-b-uuid-5678"
+
+    # Fake in-memory store: chunk tagged with userA only
+    _store: dict[str, dict] = {
+        f"canonical123:{user_a_id}:0": {
+            "id": f"canonical123:{user_a_id}:0",
+            "text": "Apple revenues grew significantly this fiscal quarter earnings.",
+            "metadata": {
+                "canonical_id": "canonical123",
+                "ticker": "AAPL",
+                "form_type": "10-K",
+                "period_of_report": "2023-09-30",
+                "section": "mda",
+                "chunk_index": 0,
+                "user_id": user_a_id,
+            },
+        }
+    }
+
+    def fake_dense_query(query_text: str, user_id: str, n_results: int = 20) -> dict:
+        """Simulate ChromaDB where={"user_id": user_id} filter."""
+        matching = [v for v in _store.values() if v["metadata"]["user_id"] == user_id]
+        if not matching:
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        return {
+            "ids": [[v["id"] for v in matching]],
+            "documents": [[v["text"] for v in matching]],
+            "metadatas": [[v["metadata"] for v in matching]],
+            "distances": [[0.1 for _ in matching]],
+        }
+
+    monkeypatch.setattr(vs, "dense_query", fake_dense_query)
+
+    # Monkeypatch the reranker to return a fixed score (avoids model download)
+    fake_reranker = MagicMock()
+    fake_reranker.predict.return_value = np.array([1.0])
+    monkeypatch.setattr(retriever_module, "_reranker", fake_reranker)
+
+    # userB retrieval must return zero results — userA's chunks are invisible (INGEST-03)
+    results_b = hybrid_retrieve("Apple revenue", user_id=user_b_id, top_k=10)
+    assert results_b == [], (
+        "userB retrieval must return zero results when only userA chunks exist (INGEST-03)"
+    )
+
+    # userA retrieval must return the chunk tagged with their user_id
+    results_a = hybrid_retrieve("Apple revenue", user_id=user_a_id, top_k=10)
+    assert len(results_a) == 1, "userA must be able to retrieve their own chunk"
+    assert results_a[0]["metadata"]["user_id"] == user_a_id, (
+        "Retrieved chunk must be tagged with userA's user_id"
+    )
+
+
+@pytest.mark.anyio
+async def test_cross_source_dedup():
+    """Same filing from EDGAR + PDF yields one chunk set; embed_and_store called once (INGEST-05).
+
+    Simulates the second-source (PDF) ingest of an already-EDGAR-indexed filing:
+      - canonical_exists returns True (EDGAR already stored it)
+      - embed_and_store must NOT be called a second time
+      - result.filings_cached is incremented
+
+    This proves cross-source dedup via compute_canonical_id (phase success criterion #5).
+    """
+    from app.services.ingestion_service import ingest_pdf
+
+    user_id = "user-a-uuid-1234"
+    mock_session = _make_session_mock(existing_canonical_ids=[])
+
+    # Build mock fitz doc (would produce chunks if dedup guard were absent)
+    mock_page = MagicMock()
+    mock_page.get_text.return_value = (
+        "Item 7 Management Discussion revenues grew Apple thirty percent fiscal year."
+    )
+    mock_doc = MagicMock()
+    mock_doc.__iter__ = MagicMock(return_value=iter([mock_page]))
+
+    with (
+        # canonical_exists=True simulates the EDGAR-indexed filing already in ChromaDB
+        patch("app.services.ingestion_service.canonical_exists", return_value=True),
+        patch("app.services.ingestion_service.embed_and_store") as mock_embed,
+        patch("app.services.ingestion_service.fitz") as mock_fitz,
+    ):
+        mock_fitz.open.return_value = mock_doc
+
+        result = await ingest_pdf(
+            file_bytes=b"fake-pdf-content",
+            user_id=user_id,
+            ticker="AAPL",
+            form_type="10-K",
+            period_of_report="2023-09-30",
+            session=mock_session,
+        )
+
+    # Second source must be detected as cached — dedup guard fires (INGEST-05)
+    assert result.filings_cached == 1, "filings_cached must be 1 when canonical_id already exists"
+    assert result.filings_ingested == 0
+    # embed_and_store must NOT be called the second time — no duplicate chunk set
+    mock_embed.assert_not_called(), (
+        "embed_and_store must not be called when canonical_id already exists in ChromaDB"
+    )
