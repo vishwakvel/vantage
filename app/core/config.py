@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     # EDGAR policy (User-Agent required on every request)
     EDGAR_USER_AGENT: str = "Vantage/1.0 vishwak.vel@gmail.com"
 
+    # ChromaDB — vector store (host-machine dev targets Docker-exposed port 8001)
+    # In Docker network the api service overrides to host="chromadb" port=8000 via env
+    CHROMADB_HOST: str = "localhost"
+    CHROMADB_PORT: int = 8001
+    CHROMADB_COLLECTION: str = "vantage_chunks"
+
 
 def get_settings() -> Settings:
     """Return a Settings instance populated from environment / .env.
