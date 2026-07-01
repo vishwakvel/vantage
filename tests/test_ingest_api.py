@@ -62,11 +62,18 @@ def _make_fake_user() -> MagicMock:
     return user
 
 
-def _mock_session():
-    """Async generator yielding a MagicMock session (no real DB connection)."""
-    async def _gen():
-        yield MagicMock()
-    return _gen()
+async def _mock_session():
+    """Async generator yielding a MagicMock session (no real DB connection).
+
+    WR-07: this must itself be an async generator FUNCTION (not a regular
+    function that returns an async generator object) — FastAPI's dependency
+    injection only wraps async generator functions with the proper
+    open/close-on-teardown behavior. A regular function returning the
+    generator object would be called once and the returned AsyncGenerator
+    object handed directly to route handlers as the "session" dependency
+    value, instead of the yielded MagicMock.
+    """
+    yield MagicMock()
 
 
 def _make_app_with_auth_override():
@@ -159,6 +166,33 @@ def test_ingest_ticker_invalid_ticker():
         resp = client.post(TICKER_URL, json={"ticker": "../../etc"})
 
     assert resp.status_code == 422
+    mock_ingest.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# test_ingest_ticker_requires_auth (WR-03 — no JWT → 401/403)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_ticker_requires_auth():
+    """POST /api/v1/ingest/ticker without a Bearer token returns 401/403.
+
+    WR-03: the endpoint previously had no authentication dependency, letting
+    any unauthenticated client trigger EDGAR searches/downloads and ChromaDB
+    writes for an arbitrary ticker. FastAPI's HTTPBearer dependency raises 403
+    (not 401) by default when the Authorization header is missing.
+    """
+    _app, client = _make_app_no_auth()
+
+    with patch(
+        "app.api.v1.ingest.ingestion_service.ingest_ticker",
+        new=AsyncMock(),
+    ) as mock_ingest:
+        resp = client.post(TICKER_URL, json={"ticker": "AAPL"})
+
+    assert resp.status_code in (401, 403), (
+        f"Expected 401 or 403 for unauthenticated ticker ingest, got {resp.status_code}: {resp.text}"
+    )
     mock_ingest.assert_not_awaited()
 
 

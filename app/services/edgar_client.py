@@ -5,6 +5,14 @@ User-Agent is mandatory per SEC EDGAR policy.  Every request MUST include
 
 All code that queries the SEC EDGAR API must go through this module.
 Direct HTTP calls to EDGAR outside this client are prohibited.
+
+WR-01: EDGAR_USER_AGENT below is the single source of truth — it is NOT
+sourced from app.core.config.Settings.  The module-level ``edgar_client``
+singleton (bottom of this file) is constructed at import time, so reading it
+from Settings would force get_settings() to run (and validate unrelated
+required fields like DATABASE_URL/JWT_SECRET_KEY) on every import of this
+module, including transitively via ingestion_service.  Setting an
+``EDGAR_USER_AGENT`` environment variable has no effect on this client.
 """
 
 from typing import Any

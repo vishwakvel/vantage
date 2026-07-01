@@ -8,8 +8,9 @@ Coverage:
   - test_user_isolation        — INGEST-03: userB query returns zero userA chunks
   - test_none_metadata_rejected — embed_and_store raises on any None metadata value
   - test_dense_query_where_filter — dense_query always forwards where={"user_id": ...}
-  - test_canonical_exists_true  — canonical_exists returns True when chunk found
+  - test_canonical_exists_true  — canonical_exists returns True when a PUBLIC chunk is found (CR-01)
   - test_canonical_exists_false — canonical_exists returns False when no chunk found
+  - test_canonical_exists_for_user_scopes_to_user_id — canonical_exists_for_user scopes to user_id (CR-01)
   - test_embed_texts_returns_list — embed_texts returns list[list[float]]
 """
 
@@ -167,7 +168,11 @@ def test_dense_query_where_filter(monkeypatch):
 
 
 def test_canonical_exists_true(monkeypatch):
-    """canonical_exists returns True when ChromaDB finds a chunk with that canonical_id."""
+    """canonical_exists returns True when ChromaDB finds a PUBLIC chunk with that canonical_id.
+
+    CR-01: canonical_exists is scoped to user_id="" (public only) so a private
+    user PDF cannot poison the public EDGAR dedup check.
+    """
     import app.services.vector_store as vs
 
     mock_col = _make_mock_collection(get_ids=["chunk-abc"])
@@ -177,7 +182,39 @@ def test_canonical_exists_true(monkeypatch):
 
     assert result is True
     mock_col.get.assert_called_once_with(
-        where={"canonical_id": "sha256abc"},
+        where={"$and": [{"canonical_id": "sha256abc"}, {"user_id": ""}]},
+        limit=1,
+        include=[],
+    )
+
+
+# ---------------------------------------------------------------------------
+# test_canonical_exists_for_user (CR-01)
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_exists_for_user_scopes_to_user_id(monkeypatch):
+    """canonical_exists_for_user scopes the ChromaDB get() to canonical_id + user_id.
+
+    CR-01: the PDF-upload dedup path uses this function (rather than the
+    public-scoped canonical_exists) to detect a user's own re-upload as
+    cached, without scanning other users' private chunks or the public scope.
+    """
+    import app.services.vector_store as vs
+
+    mock_col = _make_mock_collection(get_ids=["chunk-private-1"])
+    monkeypatch.setattr(vs, "vantage_collection", mock_col)
+
+    result = vs.canonical_exists_for_user("sha256abc", "user-a-uuid-1234")
+
+    assert result is True
+    mock_col.get.assert_called_once_with(
+        where={
+            "$and": [
+                {"canonical_id": "sha256abc"},
+                {"user_id": "user-a-uuid-1234"},
+            ]
+        },
         limit=1,
         include=[],
     )

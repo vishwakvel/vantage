@@ -183,7 +183,13 @@ def dense_query(
 
 
 def canonical_exists(canonical_id: str) -> bool:
-    """Check whether any chunk with the given canonical_id already exists.
+    """Check whether a PUBLIC chunk with the given canonical_id already exists.
+
+    Scoped to user_id="" so that a private user PDF does not poison the public
+    EDGAR dedup check (CR-01): otherwise a private upload sharing the same
+    canonical_id would permanently block the public filing from ever being
+    indexed, since the public-facing dedup check would see the private chunk
+    and treat the filing as already cached.
 
     Used for dedup before embedding — if the filing is already indexed, skip
     the embed/store step (INGEST-02).
@@ -192,11 +198,45 @@ def canonical_exists(canonical_id: str) -> bool:
         canonical_id: sha256hex canonical identifier for a filing.
 
     Returns:
-        True if at least one chunk with canonical_id exists, False otherwise.
+        True if at least one PUBLIC chunk with canonical_id exists, False otherwise.
     """
     collection = _get_chroma_collection()
     result = collection.get(
-        where={"canonical_id": canonical_id},
+        where={
+            "$and": [
+                {"canonical_id": canonical_id},
+                {"user_id": ""},  # public scope only (CR-01)
+            ]
+        },
+        limit=1,
+        include=[],
+    )
+    return len(result["ids"]) > 0
+
+
+def canonical_exists_for_user(canonical_id: str, user_id: str) -> bool:
+    """Check whether *user_id* already has a private chunk with this canonical_id.
+
+    Used by the PDF-upload dedup path so a user re-uploading the same filing
+    is detected as cached, without scanning (or being poisoned by) other
+    users' private chunks or the public EDGAR chunk set (CR-01).
+
+    Args:
+        canonical_id: sha256hex canonical identifier for a filing.
+        user_id:      UUID string of the uploading user (never "" — use
+                      canonical_exists() for the public scope instead).
+
+    Returns:
+        True if at least one chunk with canonical_id exists for user_id.
+    """
+    collection = _get_chroma_collection()
+    result = collection.get(
+        where={
+            "$and": [
+                {"canonical_id": canonical_id},
+                {"user_id": user_id},
+            ]
+        },
         limit=1,
         include=[],
     )
