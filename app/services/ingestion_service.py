@@ -67,6 +67,29 @@ from app.services.vector_store import (
 _MAX_PDF_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
 # ---------------------------------------------------------------------------
+# WR-02: offload blocking vector_store calls to a thread-pool executor
+# ---------------------------------------------------------------------------
+
+
+async def _run_sync(func: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run a synchronous, blocking callable off the event loop (WR-02).
+
+    ``canonical_exists``, ``canonical_exists_for_user``, and ``embed_and_store``
+    in ``vector_store`` are synchronous — they call ``SentenceTransformer.encode``
+    (CPU-bound) and blocking ChromaDB HTTP calls. Calling them directly from
+    ``ingest_ticker``/``ingest_pdf`` (both ``async def``) blocks the event loop
+    for the duration of the call, stalling every other concurrent request.
+    Running them via ``loop.run_in_executor`` keeps the server responsive.
+
+    The public ``vector_store`` API intentionally stays synchronous (it is
+    exercised directly and synchronously by ``tests/test_vector_store.py``);
+    this wrapper isolates the async offload to the actual async call sites.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+
+
+# ---------------------------------------------------------------------------
 # Ticker validation
 # ---------------------------------------------------------------------------
 
@@ -217,7 +240,9 @@ async def _ingest_one_filing(
     canonical_id = compute_canonical_id(ticker, form_type, period_of_report)
 
     # Dedup check — BEFORE any EDGAR fetch or embed (INGEST-02)
-    if canonical_exists(canonical_id):
+    # Offloaded to a thread-pool executor (WR-02) — canonical_exists() makes a
+    # blocking ChromaDB HTTP call.
+    if await _run_sync(canonical_exists, canonical_id):
         result.filings_cached += 1
         return
 
@@ -305,7 +330,9 @@ async def _ingest_one_filing(
     # If this raises, the PostgreSQL session is rolled back by the caller's
     # except block (see ingest_ticker) before it is committed, so no Document
     # row is left referencing chunks that were never written to ChromaDB.
-    embed_and_store(ids=ids, texts=texts, metadatas=metadatas)
+    # Offloaded to a thread-pool executor (WR-02) — embed_and_store() runs
+    # SentenceTransformer.encode (CPU-bound) plus a blocking ChromaDB write.
+    await _run_sync(embed_and_store, ids=ids, texts=texts, metadatas=metadatas)
 
     await session.commit()
     result.filings_ingested += 1
@@ -355,9 +382,18 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
     )
     existing_canonical_ids = [row[0] for row in existing_rows.fetchall()]
 
-    if existing_canonical_ids and all(
-        canonical_exists(cid) for cid in existing_canonical_ids
-    ):
+    # Offloaded to a thread-pool executor per call (WR-02) — canonical_exists()
+    # makes a blocking ChromaDB HTTP call; checked sequentially so the first
+    # miss can short-circuit without waiting on the rest.
+    all_cached = False
+    if existing_canonical_ids:
+        all_cached = True
+        for cid in existing_canonical_ids:
+            if not await _run_sync(canonical_exists, cid):
+                all_cached = False
+                break
+
+    if all_cached:
         result.filings_cached = len(existing_canonical_ids)
         return result
 
@@ -487,8 +523,14 @@ async def ingest_pdf(
     # (canonical_exists_for_user) so neither the public EDGAR chunk set nor
     # another user's private upload can poison this check, and so a user
     # re-uploading their own PDF is still detected as cached (CR-01).
+    # Offloaded to a thread-pool executor per call (WR-02) — both make blocking
+    # ChromaDB HTTP calls. Checked sequentially to preserve short-circuiting:
+    # canonical_exists_for_user is only called when the public check misses.
     canonical_id = compute_canonical_id(ticker, form_type, period_of_report)
-    if canonical_exists(canonical_id) or canonical_exists_for_user(canonical_id, user_id):
+    if await _run_sync(canonical_exists, canonical_id):
+        result.filings_cached += 1
+        return result
+    if await _run_sync(canonical_exists_for_user, canonical_id, user_id):
         result.filings_cached += 1
         return result
 
@@ -564,7 +606,8 @@ async def ingest_pdf(
         session.add(doc_chunk)
 
     # --- Embed and store in ChromaDB with user-namespaced IDs SECOND (CR-02) ---
-    embed_and_store(ids=ids, texts=texts, metadatas=metadatas)
+    # Offloaded to a thread-pool executor (WR-02) — see _run_sync docstring.
+    await _run_sync(embed_and_store, ids=ids, texts=texts, metadatas=metadatas)
 
     await session.commit()
     result.filings_ingested += 1
