@@ -1,8 +1,13 @@
 """Ticker resolution service — exact + fuzzy match against companies + seed list.
 
-``resolve(raw_query, session)`` resolves a free-text research request to zero
-or more candidate tickers, deriving confidence per 03-CONTEXT.md D-02:
+``resolve(raw_query, session, selected_tickers=None)`` resolves a free-text
+research request to zero or more candidate tickers, deriving confidence per
+03-CONTEXT.md D-02:
 
+  - Selected-ticker fast path (plan 03-02, REQST-04): when ``selected_tickers``
+    is provided (a resubmit after a ClarificationResponse), each entry is
+    validated against ``_TICKER_RE`` and treated as an exact match —
+    confidence 1.0, method "exact" — with no fuzzy/LLM work at all.
   - Exact match: a query token equal to a known ticker (Company.ticker rows
     when a session is supplied, unioned with ``_SEED_COMPANIES`` values) →
     confidence 1.0, method "exact".
@@ -11,12 +16,19 @@ or more candidate tickers, deriving confidence per 03-CONTEXT.md D-02:
     query's tokens using ``difflib.SequenceMatcher(None, span, name).ratio()``
     — the best-scoring candidate becomes the result's ticker/confidence,
     method "fuzzy". The top 3 scored candidates are always returned as
-    ``candidates``, ranked descending.
+    ``candidates``, ranked descending (D-04).
+  - LLM fallback (plan 03-02, D-01/D-02/D-03): when the fuzzy path is
+    inconclusive (best score below the usable floor), ``resolve`` attempts a
+    rate-limited extraction via ``app.services.groq_client.call_groq``. The
+    call is wrapped in try/except — ``NotImplementedError`` (Phase 1-3 stub)
+    or any other exception degrades to a low-confidence ``ResolutionResult``
+    carrying the ranked fuzzy candidates, never raising. A parseable
+    extraction uses the LLM's own self-reported confidence with method "llm".
 
-The fuzzy/local match always runs first (D-01) — this module makes **no**
-Groq call; any LLM-fallback extraction is a later plan (03-02) and belongs in
-this same file when added, going through ``app.services.groq_client`` only
-(never a direct Groq SDK import, per the CI-enforced import guard).
+The fuzzy/local match always runs first (D-01); the LLM is only ever reached
+through ``call_groq`` (never a direct Groq SDK import, per the CI-enforced
+import guard) and only when the fuzzy match is inconclusive — this keeps the
+shared 6,000 tok/min Groq budget available for the agent pipeline.
 
 The synchronous fuzzy scan is offloaded via ``_run_sync`` (a thread-pool
 executor), mirroring ``ingestion_service._run_sync`` (WR-02 precedent), so
@@ -31,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -39,6 +52,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Company
+from app.services.groq_client import call_groq
 
 # ---------------------------------------------------------------------------
 # WR-02-style offload — mirrors ingestion_service._run_sync
@@ -137,9 +151,9 @@ class ResolutionResult:
         ticker:     Resolved ticker symbol, or None if nothing scored above
                     the usable floor.
         confidence: Derived per D-02 — 1.0 for an exact ticker match, the
-                    normalized fuzzy-match ratio for a company-name match.
-        method:     "exact" | "fuzzy" | "llm" (LLM fallback lands in a later
-                    plan; this module only ever returns "exact" or "fuzzy").
+                    normalized fuzzy-match ratio for a company-name match, or
+                    the LLM's self-reported confidence for method "llm".
+        method:     "exact" | "fuzzy" | "llm".
         candidates: Ranked candidate list (top 3), descending by score.
     """
 
@@ -172,6 +186,53 @@ def _generate_spans(tokens: list[str], max_span_words: int = _MAX_SPAN_WORDS) ->
     return spans
 
 
+def _parse_llm_extraction(raw: str) -> tuple[str, float] | None:
+    """Parse a ``call_groq`` response into ``(ticker, confidence)``.
+
+    Expects a small JSON object, e.g. ``{"ticker": "AAPL", "confidence":
+    0.92}``. Returns ``None`` (never raises) when the response is not
+    parseable JSON, is missing either field, the ticker fails
+    ``_TICKER_RE``, or the confidence is outside ``[0.0, 1.0]`` — any of
+    these degrade the caller to the fuzzy-candidates fallback.
+    """
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    ticker = data.get("ticker")
+    confidence = data.get("confidence")
+    if not isinstance(ticker, str) or not isinstance(confidence, int | float):
+        return None
+
+    normalized_ticker = ticker.strip().upper()
+    if not _TICKER_RE.match(normalized_ticker):
+        return None
+    if not (0.0 <= float(confidence) <= 1.0):
+        return None
+
+    return normalized_ticker, float(confidence)
+
+
+def _build_extraction_prompt(raw_query: str) -> str:
+    """Build a short ticker-extraction prompt for the LLM fallback (D-01/D-03).
+
+    The prompt asks for a single JSON object so ``_parse_llm_extraction`` can
+    deterministically parse the response; free-text ``raw_query`` is embedded
+    as data only (never executed) — the extracted ticker is re-validated by
+    ``_TICKER_RE`` regardless of what the LLM returns (T-03-08 mitigation).
+    """
+    return (
+        "Extract the single most likely stock ticker symbol referenced in "
+        "the research request below. Respond with ONLY a JSON object of the "
+        'form {"ticker": "<1-10 uppercase alphanumeric ticker>", '
+        '"confidence": <0.0-1.0 self-assessed confidence>}.\n\n'
+        f"Research request: {raw_query!r}"
+    )
+
+
 def _score_candidates(spans: list[str], universe: dict[str, str]) -> list[CandidateMatch]:
     """Score every candidate name in *universe* against *spans* (sync, CPU-bound).
 
@@ -194,28 +255,65 @@ def _score_candidates(spans: list[str], universe: dict[str, str]) -> list[Candid
     return scored
 
 
+#: max_tokens budget reserved from groq_rate_limiter for the (short) ticker
+#: extraction prompt + tiny JSON response.
+_LLM_MAX_TOKENS: int = 256
+
+
 # ---------------------------------------------------------------------------
 # Public API — resolve
 # ---------------------------------------------------------------------------
 
 
-async def resolve(raw_query: str, session: AsyncSession | None) -> list[ResolutionResult]:
+async def resolve(
+    raw_query: str,
+    session: AsyncSession | None,
+    selected_tickers: list[str] | None = None,
+) -> list[ResolutionResult]:
     """Resolve *raw_query* to zero or more ``ResolutionResult`` entries.
 
-    Single-term slice: this plan always returns a list of exactly one
-    ``ResolutionResult`` (multi-ticker support is a later plan). Runs the
-    cheap local match first (D-01) — exact ticker-token match, then fuzzy
-    company-name match — and never calls Groq.
+    Runs the cheap local match first (D-01) — exact ticker-token match, then
+    fuzzy company-name match — and only attempts the rate-limited LLM
+    fallback (via ``call_groq``) when the fuzzy path is inconclusive.
 
     Args:
         raw_query: Free-text research request, e.g. "Tell me about Apple".
+                   Ignored entirely when ``selected_tickers`` is provided.
         session:   Async DB session used to look up ``Company`` rows. May be
                    None, in which case resolution falls back entirely to
                    ``_SEED_COMPANIES`` (used by pure unit tests with no DB).
+        selected_tickers: When provided (a resubmit after a prior
+                   ``ClarificationResponse`` — REQST-04), each entry is
+                   treated as a pre-confirmed exact match (confidence 1.0,
+                   method "exact") after validation against ``_TICKER_RE``;
+                   no fuzzy/LLM work runs on this path. Entries that fail
+                   ``_TICKER_RE`` are dropped rather than raised, matching
+                   this module's "never raise" contract — the router already
+                   validates the shape via ``ResearchRequestBody`` before
+                   calling ``resolve``.
 
     Returns:
-        A single-element list containing the best ``ResolutionResult``.
+        One ``ResolutionResult`` per selected ticker on the
+        ``selected_tickers`` fast path, otherwise a single-element list for
+        the free-text resolution path (exact / fuzzy / llm).
     """
+    # --- Fast path: pre-confirmed selection from a resubmit (D-04, REQST-04) ---
+    if selected_tickers:
+        results: list[ResolutionResult] = []
+        for raw_ticker in selected_tickers:
+            ticker = raw_ticker.strip().upper()
+            if not _TICKER_RE.match(ticker):
+                continue
+            results.append(
+                ResolutionResult(
+                    ticker=ticker,
+                    confidence=1.0,
+                    method="exact",
+                    candidates=[CandidateMatch(ticker=ticker, name=None, score=1.0)],
+                )
+            )
+        return results
+
     tokens = _TOKEN_RE.findall(raw_query)
     upper_tokens = [t.upper() for t in tokens]
 
@@ -248,22 +346,52 @@ async def resolve(raw_query: str, session: AsyncSession | None) -> list[Resoluti
     scored = await _run_sync(_score_candidates, spans, universe)
     top_candidates = scored[:3]
 
-    if not scored or scored[0].score < _MIN_USABLE_SCORE:
+    if scored and scored[0].score >= _MIN_USABLE_SCORE:
+        best = scored[0]
         return [
             ResolutionResult(
-                ticker=None,
-                confidence=scored[0].score if scored else 0.0,
+                ticker=best.ticker,
+                confidence=best.score,
                 method="fuzzy",
                 candidates=top_candidates,
             )
         ]
 
-    best = scored[0]
+    # --- LLM fallback (D-01/D-03): fuzzy path is inconclusive ---
+    fallback_confidence = scored[0].score if scored else 0.0
+    try:
+        raw_extraction = await call_groq(
+            _build_extraction_prompt(raw_query), max_tokens=_LLM_MAX_TOKENS
+        )
+    except Exception:  # noqa: BLE001 — NotImplementedError (Phase 1-3 stub)
+        # or any transient Groq failure degrades to the ranked fuzzy
+        # candidates; the LLM fallback must never break the request (D-01).
+        return [
+            ResolutionResult(
+                ticker=None,
+                confidence=fallback_confidence,
+                method="fuzzy",
+                candidates=top_candidates,
+            )
+        ]
+
+    parsed = _parse_llm_extraction(raw_extraction)
+    if parsed is None:
+        return [
+            ResolutionResult(
+                ticker=None,
+                confidence=fallback_confidence,
+                method="fuzzy",
+                candidates=top_candidates,
+            )
+        ]
+
+    llm_ticker, llm_confidence = parsed
     return [
         ResolutionResult(
-            ticker=best.ticker,
-            confidence=best.score,
-            method="fuzzy",
+            ticker=llm_ticker,
+            confidence=llm_confidence,
+            method="llm",
             candidates=top_candidates,
         )
     ]

@@ -144,9 +144,10 @@ async def test_resolve_selected_tickers_multiple() -> None:
 # LLM fallback (plan 03-02, D-01/D-02) — fuzzy-inconclusive path
 # ---------------------------------------------------------------------------
 
-#: A query with no plausible ticker/company-name span — forces the fuzzy
-#: path below the usable floor so the LLM fallback is attempted.
-_INCONCLUSIVE_QUERY = "zjqxvbnk qplfwm asdklqz thesis discussion"
+#: A query with no plausible ticker/company-name span — every span scores
+#: below ``_MIN_USABLE_SCORE`` (0.3) against the seed universe, so the fuzzy
+#: path is inconclusive and the LLM fallback is attempted.
+_INCONCLUSIVE_QUERY = "zzz xxx qqq"
 
 
 @pytest.mark.anyio
