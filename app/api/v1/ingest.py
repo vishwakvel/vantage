@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, Depends, Form, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,12 @@ from app.core.dependencies import get_current_user, get_session
 from app.db.models import User
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+
+#: Mirrors ingestion_service._MAX_PDF_BYTES — enforced at the endpoint so an
+#: oversized upload is rejected before the full body is read into memory
+#: (T-02-03 DoS mitigation, CR-03). The service-layer guard alone is too late:
+#: `await file.read()` already buffers the entire payload before that check runs.
+_PDF_ENDPOINT_MAX_BYTES: int = 50 * 1024 * 1024  # 50 MB
 
 # ---------------------------------------------------------------------------
 # Ticker validation — mirrors the service-level _TICKER_RE (T-02-02)
@@ -126,6 +132,7 @@ async def ingest_ticker_endpoint(
 
 @router.post("/pdf", response_model=IngestionResultResponse)
 async def ingest_pdf_endpoint(
+    request: Request,
     file: UploadFile,
     ticker: str = Form(...),
     form_type: str = Form(...),
@@ -146,7 +153,14 @@ async def ingest_pdf_endpoint(
     Source failures (e.g. PyMuPDF parse error) surface in ``source_warnings``
     and the response remains HTTP 200 (INGEST-04, T-02-03).
 
+    Uploads are size-checked BEFORE the body is fully buffered in memory
+    (CR-03): a Content-Length over the 50 MB limit is rejected immediately,
+    and the actual byte count is re-checked after ``file.read()`` in case the
+    client omitted or lied about Content-Length.
+
     Args:
+        request:          Raw ASGI request — used to inspect Content-Length
+                           before reading the body (CR-03).
         file:             Multipart PDF upload.
         ticker:           Ticker symbol (form field; validated by service layer).
         form_type:        SEC form type, e.g. ``"10-K"`` (form field).
@@ -157,8 +171,28 @@ async def ingest_pdf_endpoint(
 
     Returns:
         ``IngestionResultResponse`` with filing counts and any non-fatal warnings.
+
+    Raises:
+        HTTPException: 413 if the upload exceeds 50 MB (CR-03).
     """
+    # Reject oversized uploads before reading the body into memory (T-02-03, CR-03).
+    # This is a cooperative-client check only — Content-Length can be absent or
+    # lied about, which the post-read check below guards against.
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            declared_length = None
+        if declared_length is not None and declared_length > _PDF_ENDPOINT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Upload exceeds 50 MB limit")
+
     file_bytes = await file.read()
+
+    # Post-read guard: catches clients that omit or understate Content-Length.
+    if len(file_bytes) > _PDF_ENDPOINT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Upload exceeds 50 MB limit")
+
     result = await ingestion_service.ingest_pdf(
         file_bytes=file_bytes,
         user_id=str(user.id),
