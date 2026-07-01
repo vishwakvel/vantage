@@ -8,6 +8,14 @@ Coverage (03-01-PLAN.md, ROADMAP SC#1, REQST-01, REQST-02):
   - test_create_research_request_requires_auth: an unauthenticated request
     returns 401/403 before any resolve/ingest work happens.
 
+Plan 03-02 adds (ROADMAP SC#2/SC#3, REQST-03, REQST-04):
+  - test_create_research_request_ambiguous_creates_no_plan: an ambiguous
+    query returns needs_clarification true with <= 3 candidates and creates
+    zero ResearchPlan/ResearchMemo rows.
+  - test_create_research_request_resubmit_with_selected_ticker: resubmitting
+    with selected_tickers creates a ResearchPlan with resolved_tickers
+    populated and triggers ingestion.
+
 ``ingestion_service.ingest_ticker`` is patched with an ``AsyncMock`` so no
 real EDGAR/ChromaDB call happens (mirrors ``tests/test_ingest_api.py``
 conventions — patch at the service boundary, never httpx/EDGAR directly).
@@ -31,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.dependencies import get_current_user
-from app.db.models import Company, ResearchPlan, User
+from app.db.models import Company, ResearchMemo, ResearchPlan, User
 from app.db.session import get_session
 from app.main import create_app
 from app.services.ingestion_service import IngestionResult
@@ -178,3 +186,85 @@ async def test_create_research_request_requires_auth(
         f"got {resp.status_code}: {resp.text}"
     )
     mock_ingest.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# test_create_research_request_ambiguous_creates_no_plan (SC#2, REQST-03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_ambiguous_creates_no_plan(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An ambiguous query returns ClarificationResponse and creates no plan/memo (SC#2)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={"raw_query": "zjqxvbnk qplfwm asdklqz thesis discussion"},
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is True
+    assert len(body["candidates"]) <= 3
+    mock_ingest.assert_not_awaited()
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    assert plan_rows.scalars().all() == []
+
+    memo_rows = await db_session.execute(select(ResearchMemo))
+    assert memo_rows.scalars().all() == []
+
+
+# ---------------------------------------------------------------------------
+# test_create_research_request_resubmit_with_selected_ticker (SC#3, REQST-04)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_resubmit_with_selected_ticker(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Resubmitting with selected_tickers creates a ResearchPlan and triggers ingestion."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session)
+    await db_session.commit()
+
+    mock_result = IngestionResult(
+        ticker="AAPL", filings_ingested=0, filings_cached=0, source_warnings=[]
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={
+                    "raw_query": "zjqxvbnk qplfwm asdklqz thesis discussion",
+                    "selected_tickers": ["AAPL"],
+                },
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is False
+    assert body["resolved_tickers"] == ["AAPL"]
+    plan_id = uuid.UUID(body["plan_id"])
+    mock_ingest.assert_awaited_once()
+
+    result = await db_session.execute(
+        select(ResearchPlan).where(ResearchPlan.id == plan_id)
+    )
+    plan = result.scalar_one_or_none()
+    assert plan is not None
+    assert plan.resolved_tickers == ["AAPL"]
