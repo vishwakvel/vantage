@@ -255,8 +255,8 @@ def _score_candidates(spans: list[str], universe: dict[str, str]) -> list[Candid
     return scored
 
 
-#: max_tokens budget reserved from groq_rate_limiter for the (short) ticker
-#: extraction prompt + tiny JSON response.
+#: max_tokens budget acquired against groq_rate_limiter for the (short)
+#: ticker extraction prompt + tiny JSON response.
 _LLM_MAX_TOKENS: int = 256
 
 
