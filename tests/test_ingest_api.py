@@ -62,11 +62,18 @@ def _make_fake_user() -> MagicMock:
     return user
 
 
-def _mock_session():
-    """Async generator yielding a MagicMock session (no real DB connection)."""
-    async def _gen():
-        yield MagicMock()
-    return _gen()
+async def _mock_session():
+    """Async generator yielding a MagicMock session (no real DB connection).
+
+    WR-07: this must itself be an async generator FUNCTION (not a regular
+    function that returns an async generator object) — FastAPI's dependency
+    injection only wraps async generator functions with the proper
+    open/close-on-teardown behavior. A regular function returning the
+    generator object would be called once and the returned AsyncGenerator
+    object handed directly to route handlers as the "session" dependency
+    value, instead of the yielded MagicMock.
+    """
+    yield MagicMock()
 
 
 def _make_app_with_auth_override():
