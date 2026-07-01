@@ -24,9 +24,22 @@ Plan 03-03 adds (ROADMAP SC#4, REQST-05, D-06, D-07):
   - test_create_research_request_multi_ticker_all_or_nothing: one ambiguous
     term among two blocks the whole request; zero ResearchPlan rows.
 
-``ingestion_service.ingest_ticker`` is patched with an ``AsyncMock`` so no
-real EDGAR/ChromaDB call happens (mirrors ``tests/test_ingest_api.py``
-conventions — patch at the service boundary, never httpx/EDGAR directly).
+Plan 03-04 adds (ROADMAP SC#5, REQST-06, D-05):
+  - test_attach_document_success: an authenticated user attaches a PDF to a
+    plan they own; 200 with the same plan_id; ingest_pdf awaited with
+    user_id == the authenticated principal's id.
+  - test_attach_document_other_user_plan_returns_404: a plan owned by a
+    different user returns 404 (never 403 — no existence leak, OWASP A01);
+    ingest_pdf is not awaited.
+  - test_attach_document_requires_auth: unauthenticated upload returns
+    401/403.
+  - test_attach_document_oversized_upload_returns_413: an upload exceeding
+    the size guard returns 413 without awaiting ingest_pdf.
+
+``ingestion_service.ingest_ticker``/``ingest_pdf`` are patched with an
+``AsyncMock`` so no real EDGAR/ChromaDB/PyMuPDF call happens (mirrors
+``tests/test_ingest_api.py`` conventions — patch at the service boundary,
+never httpx/EDGAR directly).
 
 Uses the ``async_client``-style pattern from ``tests/conftest.py`` (db_session
 + test_settings fixtures) plus a local ``get_current_user`` override (mirrors
@@ -37,6 +50,7 @@ Skips automatically when test-postgres (port 5433) is unreachable, via the
 ``db_session`` fixture's built-in skip behavior (D-03).
 """
 
+import io
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -47,7 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.dependencies import get_current_user
-from app.db.models import Company, ResearchMemo, ResearchPlan, User
+from app.db.models import Company, ResearchMemo, ResearchPlan, ResearchRequest, User
 from app.db.session import get_session
 from app.main import create_app
 from app.services.ingestion_service import IngestionResult
@@ -80,6 +94,34 @@ async def _seed_company(
     db_session.add(company)
     await db_session.flush()
     return company
+
+
+async def _seed_research_plan(
+    db_session: AsyncSession,
+    owner: User,
+    resolved_tickers: list[str] | None = None,
+) -> ResearchPlan:
+    """Persist a ResearchRequest + owning ResearchPlan row (plan 03-04 fixture).
+
+    Mirrors the request->plan FK chain the real ``POST /research`` handler
+    creates, so the document-attach endpoint's ownership lookup
+    (``ResearchPlan.user_id == user.id``) has a real row to check against.
+    """
+    request = ResearchRequest(
+        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
+    )
+    db_session.add(request)
+    await db_session.flush()
+
+    plan = ResearchPlan(
+        request_id=request.id,
+        user_id=owner.id,
+        resolved_tickers=resolved_tickers or ["AAPL"],
+    )
+    db_session.add(plan)
+    await db_session.flush()
+    await db_session.refresh(plan)
+    return plan
 
 
 def _make_authed_client(
@@ -164,6 +206,136 @@ async def test_create_research_request_happy_path(
     plan = result.scalar_one_or_none()
     assert plan is not None
     assert plan.resolved_tickers == ["AAPL"]
+
+
+# ---------------------------------------------------------------------------
+# Document attachment (plan 03-04, ROADMAP SC#5, REQST-06, D-05)
+# ---------------------------------------------------------------------------
+
+
+def _make_pdf_upload_file() -> dict[str, tuple[str, io.BytesIO, str]]:
+    """Return a small fake-PDF multipart ``files=`` payload (mirrors test_ingest_api.py)."""
+    file_content = b"%PDF-1.4 fake content"
+    return {"file": ("private.pdf", io.BytesIO(file_content), "application/pdf")}
+
+
+@pytest.mark.anyio
+async def test_attach_document_success(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """POST /research/{plan_id}/documents accepts a PDF for a plan the user owns (SC#5)."""
+    user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    mock_result = IngestionResult(
+        ticker="AAPL", filings_ingested=1, filings_cached=0, source_warnings=[]
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_pdf",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_ingest_pdf:
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["plan_id"] == str(plan.id)
+
+    mock_ingest_pdf.assert_awaited_once()
+    called_user_id = mock_ingest_pdf.call_args.kwargs.get("user_id")
+    assert called_user_id == str(user.id), (
+        f"ingest_pdf was called with user_id={called_user_id!r}, "
+        f"expected authenticated user id={user.id!r}"
+    )
+
+
+@pytest.mark.anyio
+async def test_attach_document_other_user_plan_returns_404(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A plan owned by a DIFFERENT user returns 404, never 403 (IDOR / OWASP A01)."""
+    owner = await _seed_user(db_session)
+    other_user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, owner, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, other_user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_pdf",
+            new=AsyncMock(),
+        ) as mock_ingest_pdf:
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code == 404, resp.text
+    mock_ingest_pdf.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_attach_document_requires_auth(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Unauthenticated document upload returns 401/403 before any ingest work."""
+    user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    with patch(
+        "app.api.v1.research.ingestion_service.ingest_pdf",
+        new=AsyncMock(),
+    ) as mock_ingest_pdf:
+        async with _make_unauthed_client(db_session, test_settings) as client:
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code in (401, 403), (
+        f"Expected 401 or 403 for unauthenticated document upload, "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    mock_ingest_pdf.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_attach_document_oversized_upload_returns_413(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An oversized upload is rejected with 413 without awaiting ingest_pdf (CR-03).
+
+    Patches the endpoint's size-guard constant down to a few bytes so the
+    test exercises the real guard logic without transferring a 50 MB body.
+    """
+    user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with (
+            patch("app.api.v1.research._RESEARCH_DOC_MAX_BYTES", 4),
+            patch(
+                "app.api.v1.research.ingestion_service.ingest_pdf",
+                new=AsyncMock(),
+            ) as mock_ingest_pdf,
+        ):
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code == 413, resp.text
+    mock_ingest_pdf.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
