@@ -106,9 +106,16 @@ class IngestionResultResponse(BaseModel):
 @router.post("/ticker", response_model=IngestionResultResponse)
 async def ingest_ticker_endpoint(
     body: TickerRequest,
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> IngestionResultResponse:
     """Ingest recent SEC filings for a given ticker symbol.
+
+    Authentication is REQUIRED (WR-03) — an unauthenticated request never
+    reaches the handler body (401/403). Without this guard, any unauthenticated
+    client could trigger EDGAR EFTS searches, Archives downloads, and
+    embedding/ChromaDB writes for an arbitrary ticker, exhausting the EDGAR
+    rate-limit budget and filling ChromaDB with attacker-directed data.
 
     Calls ``ingestion_service.ingest_ticker`` and returns the result as JSON.
     Source failures (e.g. EDGAR down) surface in ``source_warnings`` — the
@@ -116,6 +123,8 @@ async def ingest_ticker_endpoint(
 
     Args:
         body:    Validated request body containing the uppercased ticker.
+        user:    Authenticated user resolved from the Bearer JWT (WR-03);
+                 unused beyond enforcing authentication.
         session: Injected async DB session.
 
     Returns:

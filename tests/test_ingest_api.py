@@ -163,6 +163,33 @@ def test_ingest_ticker_invalid_ticker():
 
 
 # ---------------------------------------------------------------------------
+# test_ingest_ticker_requires_auth (WR-03 — no JWT → 401/403)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_ticker_requires_auth():
+    """POST /api/v1/ingest/ticker without a Bearer token returns 401/403.
+
+    WR-03: the endpoint previously had no authentication dependency, letting
+    any unauthenticated client trigger EDGAR searches/downloads and ChromaDB
+    writes for an arbitrary ticker. FastAPI's HTTPBearer dependency raises 403
+    (not 401) by default when the Authorization header is missing.
+    """
+    _app, client = _make_app_no_auth()
+
+    with patch(
+        "app.api.v1.ingest.ingestion_service.ingest_ticker",
+        new=AsyncMock(),
+    ) as mock_ingest:
+        resp = client.post(TICKER_URL, json={"ticker": "AAPL"})
+
+    assert resp.status_code in (401, 403), (
+        f"Expected 401 or 403 for unauthenticated ticker ingest, got {resp.status_code}: {resp.text}"
+    )
+    mock_ingest.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # test_ingest_pdf_requires_auth (T-02-01 — no JWT → 401)
 # ---------------------------------------------------------------------------
 
