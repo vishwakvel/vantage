@@ -53,7 +53,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Document, DocumentChunk, DocumentSourceType, DocumentVisibility
 from app.ingestion.chunker import section_aware_chunk
 from app.services.edgar_client import edgar_client
-from app.services.vector_store import canonical_exists, embed_and_store
+from app.services.vector_store import (
+    canonical_exists,
+    canonical_exists_for_user,
+    embed_and_store,
+)
 
 # ---------------------------------------------------------------------------
 # PDF ingestion constants
@@ -260,14 +264,17 @@ async def _ingest_one_filing(
         )
         return
 
-    # --- Embed and store in ChromaDB ---
+    # --- Prepare chunk ids/texts/metadatas for both PostgreSQL and ChromaDB ---
 
     ids = [f"{canonical_id}:{chunk['metadata']['chunk_index']}" for chunk in chunks]
     texts = [chunk["text"] for chunk in chunks]
     metadatas = [chunk["metadata"] for chunk in chunks]
-    embed_and_store(ids=ids, texts=texts, metadatas=metadatas)
 
-    # --- Persist Document + DocumentChunk rows to PostgreSQL ---
+    # --- Persist Document + DocumentChunk rows to PostgreSQL FIRST (CR-02) ---
+    # Writing PostgreSQL before ChromaDB means a flush() failure (e.g. a unique
+    # constraint violation) never leaves an orphaned ChromaDB write behind: no
+    # ChromaDB call has happened yet, so canonical_exists() stays False and a
+    # retry is clean.
 
     doc_url = f"https://www.sec.gov{doc_path}"
     doc = Document(
@@ -293,6 +300,12 @@ async def _ingest_one_filing(
             embedding_id=chunk_id,
         )
         session.add(doc_chunk)
+
+    # --- Embed and store in ChromaDB SECOND (CR-02) ---
+    # If this raises, the PostgreSQL session is rolled back by the caller's
+    # except block (see ingest_ticker) before it is committed, so no Document
+    # row is left referencing chunks that were never written to ChromaDB.
+    embed_and_store(ids=ids, texts=texts, metadatas=metadatas)
 
     await session.commit()
     result.filings_ingested += 1
@@ -386,6 +399,11 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
         try:
             await _ingest_one_filing(filing_meta, ticker, session, result)
         except Exception as exc:
+            # Roll back any flushed-but-uncommitted Document/DocumentChunk rows
+            # for this filing (CR-02) — the session is reused across filings in
+            # this loop, so a failed filing must not carry pending rows into a
+            # later filing's session.commit().
+            await session.rollback()
             result.source_warnings.append(
                 f"Failed to ingest {ticker} "
                 f"{filing_meta.get('form_type')} "
@@ -423,16 +441,20 @@ async def ingest_pdf(
     Flow:
       1. Validate + uppercase the ticker (T-02-02 SSRF guard).
       2. Reject ``file_bytes`` over 50 MB before parse (T-02-03 DoS mitigation).
-      3. Extract text via ``fitz.open(stream=file_bytes, filetype="pdf")``; on any
+      3. Compute ``canonical_id`` and check ``canonical_exists`` (public scope) and
+         ``canonical_exists_for_user`` (this user's private scope) BEFORE the
+         expensive PyMuPDF parse (WR-06); if either is True, return with
+         ``filings_cached += 1`` — **no duplicate chunk set** (INGEST-05) and no
+         cross-user/public poisoning (CR-01).
+      4. Extract text via ``fitz.open(stream=file_bytes, filetype="pdf")``; on any
          parse error append a ``source_warning`` and return (INGEST-04 pattern).
-      4. Compute ``canonical_id`` and check ``canonical_exists``; if True, return
-         with ``filings_cached += 1`` — **no duplicate chunk set** (INGEST-05).
       5. ``section_aware_chunk`` the plain text; build chunk IDs as
          ``"{canonical_id}:{user_id}:{chunk_index}"`` for per-user namespacing.
-      6. ``embed_and_store`` with ``user_id=str(user_id)`` in every chunk metadata
-         (never empty-string; never None — ChromaDB 0.5.x guard).
-      7. Persist ``Document(source_type=USER_UPLOAD, visibility=PRIVATE, user_id=…)``
-         and ``DocumentChunk`` rows to PostgreSQL.
+      6. Persist ``Document(source_type=USER_UPLOAD, visibility=PRIVATE, user_id=…)``
+         and ``DocumentChunk`` rows to PostgreSQL FIRST, then ``embed_and_store``
+         with ``user_id=str(user_id)`` in every chunk metadata (never empty-string;
+         never None — ChromaDB 0.5.x guard) — PostgreSQL-before-ChromaDB write
+         order avoids a permanent orphan if the PostgreSQL flush fails (CR-02).
 
     Args:
         file_bytes:       Raw PDF bytes from the upload (UploadFile.read()).
@@ -459,6 +481,17 @@ async def ingest_pdf(
         )
         return result
 
+    # --- Dedup check — BEFORE the expensive fitz parse (WR-06) ---
+    # Same canonical_id formula as the EDGAR path (INGEST-05). Checks BOTH the
+    # public scope (canonical_exists) and this user's private scope
+    # (canonical_exists_for_user) so neither the public EDGAR chunk set nor
+    # another user's private upload can poison this check, and so a user
+    # re-uploading their own PDF is still detected as cached (CR-01).
+    canonical_id = compute_canonical_id(ticker, form_type, period_of_report)
+    if canonical_exists(canonical_id) or canonical_exists_for_user(canonical_id, user_id):
+        result.filings_cached += 1
+        return result
+
     # --- Extract text via fitz (PyMuPDF, D-11) ---
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -477,12 +510,6 @@ async def ingest_pdf(
         )
         return result
 
-    # --- Dedup check — same canonical_id formula as EDGAR path (INGEST-05) ---
-    canonical_id = compute_canonical_id(ticker, form_type, period_of_report)
-    if canonical_exists(canonical_id):
-        result.filings_cached += 1
-        return result
-
     # --- Chunk the plain text through the shared pipeline ---
     # user_id=str(user_id) — private chunk; never "" (ChromaDB 0.5.x None guard)
     base_metadata: dict[str, Any] = {
@@ -499,7 +526,7 @@ async def ingest_pdf(
         )
         return result
 
-    # --- Embed and store in ChromaDB with user-namespaced IDs ---
+    # --- Prepare chunk ids/texts/metadatas for both PostgreSQL and ChromaDB ---
     # ID format: "{canonical_id}:{user_id}:{chunk_index}" — unique per (filing, user, chunk)
     ids = [
         f"{canonical_id}:{user_id}:{chunk['metadata']['chunk_index']}"
@@ -507,9 +534,11 @@ async def ingest_pdf(
     ]
     texts = [chunk["text"] for chunk in chunks]
     metadatas = [chunk["metadata"] for chunk in chunks]
-    embed_and_store(ids=ids, texts=texts, metadatas=metadatas)
 
-    # --- Persist Document + DocumentChunk rows to PostgreSQL ---
+    # --- Persist Document + DocumentChunk rows to PostgreSQL FIRST (CR-02) ---
+    # PostgreSQL-before-ChromaDB write order: a flush() failure here means no
+    # ChromaDB write has happened yet, so canonical_exists()/
+    # canonical_exists_for_user() stay False and a retry is clean.
     doc_row = Document(
         canonical_id=canonical_id,
         user_id=user_id,  # private upload — user_id set in PostgreSQL
@@ -533,6 +562,9 @@ async def ingest_pdf(
             embedding_id=chunk_id,
         )
         session.add(doc_chunk)
+
+    # --- Embed and store in ChromaDB with user-namespaced IDs SECOND (CR-02) ---
+    embed_and_store(ids=ids, texts=texts, metadatas=metadatas)
 
     await session.commit()
     result.filings_ingested += 1

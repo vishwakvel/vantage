@@ -340,6 +340,7 @@ async def test_ingest_pdf_user_scoped():
 
     with (
         patch("app.services.ingestion_service.canonical_exists", return_value=False),
+        patch("app.services.ingestion_service.canonical_exists_for_user", return_value=False),
         patch("app.services.ingestion_service.embed_and_store") as mock_embed,
         patch("app.services.ingestion_service.fitz") as mock_fitz,
     ):
@@ -396,6 +397,7 @@ async def test_pdf_failure_returns_warning():
 
     with (
         patch("app.services.ingestion_service.canonical_exists", return_value=False),
+        patch("app.services.ingestion_service.canonical_exists_for_user", return_value=False),
         patch("app.services.ingestion_service.embed_and_store") as mock_embed,
         patch("app.services.ingestion_service.fitz") as mock_fitz,
     ):
