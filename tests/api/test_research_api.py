@@ -1,0 +1,545 @@
+"""Research API endpoint tests — POST /api/v1/research.
+
+Coverage (03-01-PLAN.md, ROADMAP SC#1, REQST-01, REQST-02):
+  - test_create_research_request_happy_path: an authenticated free-text
+    request that resolves unambiguously returns 200, needs_clarification
+    false, a valid plan_id, resolved_tickers == ["AAPL"], and a persisted
+    ResearchPlan row exists in the DB.
+  - test_create_research_request_requires_auth: an unauthenticated request
+    returns 401/403 before any resolve/ingest work happens.
+
+Plan 03-02 adds (ROADMAP SC#2/SC#3, REQST-03, REQST-04):
+  - test_create_research_request_ambiguous_creates_no_plan: an ambiguous
+    query returns needs_clarification true with <= 3 candidates and creates
+    zero ResearchPlan/ResearchMemo rows.
+  - test_create_research_request_resubmit_with_selected_ticker: resubmitting
+    with selected_tickers creates a ResearchPlan with resolved_tickers
+    populated and triggers ingestion.
+
+Plan 03-03 adds (ROADMAP SC#4, REQST-05, D-06, D-07):
+  - test_create_research_request_multi_ticker_happy_path: "Compare AAPL and
+    MSFT" resolves both tickers into a single ResearchPlan.
+  - test_create_research_request_rejects_more_than_two_tickers: a 3-ticker
+    request is rejected (400/422) and creates no ResearchPlan.
+  - test_create_research_request_multi_ticker_all_or_nothing: one ambiguous
+    term among two blocks the whole request; zero ResearchPlan rows.
+
+Plan 03-04 adds (ROADMAP SC#5, REQST-06, D-05):
+  - test_attach_document_success: an authenticated user attaches a PDF to a
+    plan they own; 200 with the same plan_id; ingest_pdf awaited with
+    user_id == the authenticated principal's id.
+  - test_attach_document_other_user_plan_returns_404: a plan owned by a
+    different user returns 404 (never 403 — no existence leak, OWASP A01);
+    ingest_pdf is not awaited.
+  - test_attach_document_requires_auth: unauthenticated upload returns
+    401/403.
+  - test_attach_document_oversized_upload_returns_413: an upload exceeding
+    the size guard returns 413 without awaiting ingest_pdf.
+
+``ingestion_service.ingest_ticker``/``ingest_pdf`` are patched with an
+``AsyncMock`` so no real EDGAR/ChromaDB/PyMuPDF call happens (mirrors
+``tests/test_ingest_api.py`` conventions — patch at the service boundary,
+never httpx/EDGAR directly).
+
+Uses the ``async_client``-style pattern from ``tests/conftest.py`` (db_session
++ test_settings fixtures) plus a local ``get_current_user`` override (mirrors
+``tests/test_ingest_api.py`` lines 79-96) so persistence assertions run
+against a real (test-postgres) session while auth is short-circuited.
+
+Skips automatically when test-postgres (port 5433) is unreachable, via the
+``db_session`` fixture's built-in skip behavior (D-03).
+"""
+
+import io
+import uuid
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import Settings, get_settings
+from app.core.dependencies import get_current_user
+from app.db.models import Company, ResearchMemo, ResearchPlan, ResearchRequest, User
+from app.db.session import get_session
+from app.main import create_app
+from app.services.ingestion_service import IngestionResult
+
+RESEARCH_URL = "/api/v1/research"
+
+
+# ---------------------------------------------------------------------------
+# Seed helpers
+# ---------------------------------------------------------------------------
+
+
+async def _seed_user(db_session: AsyncSession) -> User:
+    """Persist and return a User row (FK target for ResearchRequest/ResearchPlan)."""
+    user = User(
+        email=f"{uuid.uuid4()}@example.com",
+        password_hash="not-a-real-hash",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await db_session.refresh(user)
+    return user
+
+
+async def _seed_company(
+    db_session: AsyncSession, ticker: str = "AAPL", name: str = "Apple Inc."
+) -> Company:
+    """Persist and return a Company row used by the fuzzy-match path."""
+    company = Company(ticker=ticker, name=name)
+    db_session.add(company)
+    await db_session.flush()
+    return company
+
+
+async def _seed_research_plan(
+    db_session: AsyncSession,
+    owner: User,
+    resolved_tickers: list[str] | None = None,
+) -> ResearchPlan:
+    """Persist a ResearchRequest + owning ResearchPlan row (plan 03-04 fixture).
+
+    Mirrors the request->plan FK chain the real ``POST /research`` handler
+    creates, so the document-attach endpoint's ownership lookup
+    (``ResearchPlan.user_id == user.id``) has a real row to check against.
+    """
+    request = ResearchRequest(
+        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
+    )
+    db_session.add(request)
+    await db_session.flush()
+
+    plan = ResearchPlan(
+        request_id=request.id,
+        user_id=owner.id,
+        resolved_tickers=resolved_tickers or ["AAPL"],
+    )
+    db_session.add(plan)
+    await db_session.flush()
+    await db_session.refresh(plan)
+    return plan
+
+
+def _make_authed_client(
+    db_session: AsyncSession, test_settings: Settings, user: User
+) -> AsyncClient:
+    """Build an AsyncClient wired to db_session with get_current_user overridden.
+
+    Mirrors the ``async_client`` fixture in conftest.py plus an
+    authenticated-user override (mirrors ``tests/test_ingest_api.py``'s
+    ``_make_app_with_auth_override``, lines 79-96) so the handler's
+    ``user.id`` references a real, persisted ``User`` row (satisfying the
+    ``research_requests.user_id`` / ``research_plans.user_id`` FK constraints).
+    """
+    application = create_app()
+    application.dependency_overrides[get_settings] = lambda: test_settings
+
+    async def _override_session():
+        yield db_session
+
+    application.dependency_overrides[get_session] = _override_session
+    application.dependency_overrides[get_current_user] = lambda: user
+
+    return AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://testserver"
+    )
+
+
+def _make_unauthed_client(
+    db_session: AsyncSession, test_settings: Settings
+) -> AsyncClient:
+    """Build an AsyncClient with NO get_current_user override (requires real JWT)."""
+    application = create_app()
+    application.dependency_overrides[get_settings] = lambda: test_settings
+
+    async def _override_session():
+        yield db_session
+
+    application.dependency_overrides[get_session] = _override_session
+
+    return AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://testserver"
+    )
+
+
+# ---------------------------------------------------------------------------
+# test_create_research_request_happy_path (SC#1, REQST-01, REQST-02)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_happy_path(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Authenticated POST /api/v1/research resolves AAPL and persists a ResearchPlan."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session)
+    await db_session.commit()
+
+    mock_result = IngestionResult(
+        ticker="AAPL", filings_ingested=0, filings_cached=0, source_warnings=[]
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL, json={"raw_query": "Tell me about Apple"}
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is False
+    assert body["resolved_tickers"] == ["AAPL"]
+    plan_id = uuid.UUID(body["plan_id"])  # valid UUID string
+    mock_ingest.assert_awaited_once()
+
+    result = await db_session.execute(
+        select(ResearchPlan).where(ResearchPlan.id == plan_id)
+    )
+    plan = result.scalar_one_or_none()
+    assert plan is not None
+    assert plan.resolved_tickers == ["AAPL"]
+
+
+# ---------------------------------------------------------------------------
+# Document attachment (plan 03-04, ROADMAP SC#5, REQST-06, D-05)
+# ---------------------------------------------------------------------------
+
+
+def _make_pdf_upload_file() -> dict[str, tuple[str, io.BytesIO, str]]:
+    """Return a small fake-PDF multipart ``files=`` payload (mirrors test_ingest_api.py)."""
+    file_content = b"%PDF-1.4 fake content"
+    return {"file": ("private.pdf", io.BytesIO(file_content), "application/pdf")}
+
+
+@pytest.mark.anyio
+async def test_attach_document_success(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """POST /research/{plan_id}/documents accepts a PDF for a plan the user owns (SC#5)."""
+    user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    mock_result = IngestionResult(
+        ticker="AAPL", filings_ingested=1, filings_cached=0, source_warnings=[]
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_pdf",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_ingest_pdf:
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["plan_id"] == str(plan.id)
+
+    mock_ingest_pdf.assert_awaited_once()
+    called_user_id = mock_ingest_pdf.call_args.kwargs.get("user_id")
+    assert called_user_id == str(user.id), (
+        f"ingest_pdf was called with user_id={called_user_id!r}, "
+        f"expected authenticated user id={user.id!r}"
+    )
+
+
+@pytest.mark.anyio
+async def test_attach_document_other_user_plan_returns_404(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A plan owned by a DIFFERENT user returns 404, never 403 (IDOR / OWASP A01)."""
+    owner = await _seed_user(db_session)
+    other_user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, owner, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, other_user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_pdf",
+            new=AsyncMock(),
+        ) as mock_ingest_pdf:
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code == 404, resp.text
+    mock_ingest_pdf.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_attach_document_requires_auth(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Unauthenticated document upload returns 401/403 before any ingest work."""
+    user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    with patch(
+        "app.api.v1.research.ingestion_service.ingest_pdf",
+        new=AsyncMock(),
+    ) as mock_ingest_pdf:
+        async with _make_unauthed_client(db_session, test_settings) as client:
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code in (401, 403), (
+        f"Expected 401 or 403 for unauthenticated document upload, "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    mock_ingest_pdf.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_attach_document_oversized_upload_returns_413(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An oversized upload is rejected with 413 without awaiting ingest_pdf (CR-03).
+
+    Patches the endpoint's size-guard constant down to a few bytes so the
+    test exercises the real guard logic without transferring a 50 MB body.
+    """
+    user = await _seed_user(db_session)
+    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with (
+            patch("app.api.v1.research._RESEARCH_DOC_MAX_BYTES", 4),
+            patch(
+                "app.api.v1.research.ingestion_service.ingest_pdf",
+                new=AsyncMock(),
+            ) as mock_ingest_pdf,
+        ):
+            resp = await client.post(
+                f"{RESEARCH_URL}/{plan.id}/documents",
+                files=_make_pdf_upload_file(),
+                data={"form_type": "10-K", "period_of_report": "2023-09-30"},
+            )
+
+    assert resp.status_code == 413, resp.text
+    mock_ingest_pdf.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# test_create_research_request_requires_auth (T-03-04, mirrors WR-03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_requires_auth(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Unauthenticated POST /api/v1/research returns 401 or 403.
+
+    FastAPI's HTTPBearer dependency raises 403 (not 401) by default when the
+    Authorization header is missing — both are accepted as "unauthenticated".
+    """
+    with patch(
+        "app.api.v1.research.ingestion_service.ingest_ticker",
+        new=AsyncMock(),
+    ) as mock_ingest:
+        async with _make_unauthed_client(db_session, test_settings) as client:
+            resp = await client.post(
+                RESEARCH_URL, json={"raw_query": "Tell me about Apple"}
+            )
+
+    assert resp.status_code in (401, 403), (
+        f"Expected 401 or 403 for unauthenticated research request, "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    mock_ingest.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# test_create_research_request_ambiguous_creates_no_plan (SC#2, REQST-03)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_ambiguous_creates_no_plan(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An ambiguous query returns ClarificationResponse and creates no plan/memo (SC#2)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={"raw_query": "zjqxvbnk qplfwm asdklqz thesis discussion"},
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is True
+    assert len(body["candidates"]) <= 3
+    mock_ingest.assert_not_awaited()
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    assert plan_rows.scalars().all() == []
+
+    memo_rows = await db_session.execute(select(ResearchMemo))
+    assert memo_rows.scalars().all() == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-ticker requests (plan 03-03, SC#4, REQST-05, D-06, D-07)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_multi_ticker_happy_path(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """'Compare AAPL and MSFT' resolves to a single ResearchPlan with both tickers (SC#4)."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL", name="Apple Inc.")
+    await _seed_company(db_session, ticker="MSFT", name="Microsoft Corporation")
+    await db_session.commit()
+
+    mock_result = IngestionResult(
+        ticker="AAPL", filings_ingested=0, filings_cached=0, source_warnings=[]
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL, json={"raw_query": "Compare AAPL and MSFT"}
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is False
+    assert set(body["resolved_tickers"]) == {"AAPL", "MSFT"}
+    plan_id = uuid.UUID(body["plan_id"])
+    assert mock_ingest.await_count == 2
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    plans = plan_rows.scalars().all()
+    assert len(plans) == 1
+    assert plans[0].id == plan_id
+    assert set(plans[0].resolved_tickers) == {"AAPL", "MSFT"}
+
+
+@pytest.mark.anyio
+async def test_create_research_request_rejects_more_than_two_tickers(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A 3-ticker request is rejected and creates no ResearchPlan (D-07)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={"raw_query": "Compare AAPL and MSFT and GOOG"},
+            )
+
+    assert resp.status_code in (400, 422), resp.text
+    mock_ingest.assert_not_awaited()
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    assert plan_rows.scalars().all() == []
+
+
+@pytest.mark.anyio
+async def test_create_research_request_multi_ticker_all_or_nothing(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """One ambiguous term among two blocks the whole request; zero plans created (D-06)."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL", name="Apple Inc.")
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={"raw_query": "Compare AAPL and zzz xxx qqq"},
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is True
+    mock_ingest.assert_not_awaited()
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    assert plan_rows.scalars().all() == []
+
+
+# ---------------------------------------------------------------------------
+# test_create_research_request_resubmit_with_selected_ticker (SC#3, REQST-04)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_resubmit_with_selected_ticker(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Resubmitting with selected_tickers creates a ResearchPlan and triggers ingestion."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session)
+    await db_session.commit()
+
+    mock_result = IngestionResult(
+        ticker="AAPL", filings_ingested=0, filings_cached=0, source_warnings=[]
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={
+                    "raw_query": "zjqxvbnk qplfwm asdklqz thesis discussion",
+                    "selected_tickers": ["AAPL"],
+                },
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is False
+    assert body["resolved_tickers"] == ["AAPL"]
+    plan_id = uuid.UUID(body["plan_id"])
+    mock_ingest.assert_awaited_once()
+
+    result = await db_session.execute(
+        select(ResearchPlan).where(ResearchPlan.id == plan_id)
+    )
+    plan = result.scalar_one_or_none()
+    assert plan is not None
+    assert plan.resolved_tickers == ["AAPL"]
