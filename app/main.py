@@ -27,6 +27,13 @@ def create_app() -> FastAPI:
         yield
         # Shutdown — populated in plan 01-05
 
+        # WR-05: close the edgar_client module-level singleton's httpx
+        # connection pools so in-flight connections are drained and OS
+        # sockets released on app shutdown, instead of being abandoned.
+        from app.services.edgar_client import edgar_client  # noqa: PLC0415
+
+        await edgar_client.close()
+
     application = FastAPI(
         title="Vantage",
         version="0.1.0",
