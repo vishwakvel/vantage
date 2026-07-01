@@ -16,6 +16,14 @@ Plan 03-02 adds (ROADMAP SC#2/SC#3, REQST-03, REQST-04):
     with selected_tickers creates a ResearchPlan with resolved_tickers
     populated and triggers ingestion.
 
+Plan 03-03 adds (ROADMAP SC#4, REQST-05, D-06, D-07):
+  - test_create_research_request_multi_ticker_happy_path: "Compare AAPL and
+    MSFT" resolves both tickers into a single ResearchPlan.
+  - test_create_research_request_rejects_more_than_two_tickers: a 3-ticker
+    request is rejected (400/422) and creates no ResearchPlan.
+  - test_create_research_request_multi_ticker_all_or_nothing: one ambiguous
+    term among two blocks the whole request; zero ResearchPlan rows.
+
 ``ingestion_service.ingest_ticker`` is patched with an ``AsyncMock`` so no
 real EDGAR/ChromaDB call happens (mirrors ``tests/test_ingest_api.py``
 conventions — patch at the service boundary, never httpx/EDGAR directly).
@@ -222,6 +230,101 @@ async def test_create_research_request_ambiguous_creates_no_plan(
 
     memo_rows = await db_session.execute(select(ResearchMemo))
     assert memo_rows.scalars().all() == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-ticker requests (plan 03-03, SC#4, REQST-05, D-06, D-07)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_research_request_multi_ticker_happy_path(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """'Compare AAPL and MSFT' resolves to a single ResearchPlan with both tickers (SC#4)."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL", name="Apple Inc.")
+    await _seed_company(db_session, ticker="MSFT", name="Microsoft Corporation")
+    await db_session.commit()
+
+    mock_result = IngestionResult(
+        ticker="AAPL", filings_ingested=0, filings_cached=0, source_warnings=[]
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(return_value=mock_result),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL, json={"raw_query": "Compare AAPL and MSFT"}
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is False
+    assert set(body["resolved_tickers"]) == {"AAPL", "MSFT"}
+    plan_id = uuid.UUID(body["plan_id"])
+    assert mock_ingest.await_count == 2
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    plans = plan_rows.scalars().all()
+    assert len(plans) == 1
+    assert plans[0].id == plan_id
+    assert set(plans[0].resolved_tickers) == {"AAPL", "MSFT"}
+
+
+@pytest.mark.anyio
+async def test_create_research_request_rejects_more_than_two_tickers(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A 3-ticker request is rejected and creates no ResearchPlan (D-07)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={"raw_query": "Compare AAPL and MSFT and GOOG"},
+            )
+
+    assert resp.status_code in (400, 422), resp.text
+    mock_ingest.assert_not_awaited()
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    assert plan_rows.scalars().all() == []
+
+
+@pytest.mark.anyio
+async def test_create_research_request_multi_ticker_all_or_nothing(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """One ambiguous term among two blocks the whole request; zero plans created (D-06)."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL", name="Apple Inc.")
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        with patch(
+            "app.api.v1.research.ingestion_service.ingest_ticker",
+            new=AsyncMock(),
+        ) as mock_ingest:
+            resp = await client.post(
+                RESEARCH_URL,
+                json={"raw_query": "Compare AAPL and zzz xxx qqq"},
+            )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["needs_clarification"] is True
+    mock_ingest.assert_not_awaited()
+
+    plan_rows = await db_session.execute(select(ResearchPlan))
+    assert plan_rows.scalars().all() == []
 
 
 # ---------------------------------------------------------------------------

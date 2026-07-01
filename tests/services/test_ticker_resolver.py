@@ -20,6 +20,11 @@ Plan 03-02 adds (D-01/D-02/D-03/D-04):
 
 No Groq call is made anywhere in this module except through
 ``app.services.groq_client.call_groq`` (never the raw Groq SDK).
+
+Plan 03-03 adds (D-06, D-07):
+  - Multi-term extraction: a "Compare X and Y" query resolves into two
+    independent ``ResolutionResult`` entries, one per term.
+  - A query naming more than 2 tickers raises ``TooManyTickersError`` (D-07).
 """
 
 from unittest.mock import AsyncMock, patch
@@ -197,3 +202,28 @@ async def test_candidates_capped_at_three_ranked_descending() -> None:
     assert len(result.candidates) <= 3
     scores = [c.score for c in result.candidates]
     assert scores == sorted(scores, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Multi-ticker extraction and cap (plan 03-03, D-06, D-07)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_resolve_multi_ticker_compare_query() -> None:
+    """resolve('Compare AAPL and MSFT') yields two exact ResolutionResults (SC#4)."""
+    results = await resolve("Compare AAPL and MSFT", session=None)
+
+    assert len(results) == 2
+    tickers = {r.ticker for r in results}
+    assert tickers == {"AAPL", "MSFT"}
+    assert all(r.confidence == 1.0 and r.method == "exact" for r in results)
+
+
+@pytest.mark.anyio
+async def test_resolve_rejects_more_than_two_tickers() -> None:
+    """resolve() raises TooManyTickersError when a query names more than 2 tickers (D-07)."""
+    from app.services.ticker_resolver import TooManyTickersError
+
+    with pytest.raises(TooManyTickersError):
+        await resolve("Compare AAPL and MSFT and GOOG", session=None)
