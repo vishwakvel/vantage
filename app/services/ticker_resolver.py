@@ -24,6 +24,13 @@ research request to zero or more candidate tickers, deriving confidence per
     or any other exception degrades to a low-confidence ``ResolutionResult``
     carrying the ranked fuzzy candidates, never raising. A parseable
     extraction uses the LLM's own self-reported confidence with method "llm".
+  - Multi-term extraction (plan 03-03, D-06/D-07): the free-text path splits
+    ``raw_query`` on comparison connectors ("and", ",", "vs", "versus",
+    "compare") into up to 2 candidate spans, each resolved independently
+    through the exact/fuzzy/LLM cascade above, yielding one
+    ``ResolutionResult`` per span. More than 2 detected spans raises
+    ``TooManyTickersError`` (T-03-09: rejected before any resolve/ingest work
+    fans out).
 
 The fuzzy/local match always runs first (D-01); the LLM is only ever reached
 through ``call_groq`` (never a direct Groq SDK import, per the CI-enforced
@@ -85,6 +92,26 @@ _TICKER_RE: re.Pattern[str] = re.compile(r"^[A-Z0-9]{1,10}$")
 #: Extracts alphanumeric word tokens from a free-text query (drops
 #: punctuation) for both the exact-match scan and the fuzzy span generator.
 _TOKEN_RE: re.Pattern[str] = re.compile(r"[A-Za-z0-9]+")
+
+#: Comparison connectors that separate individual ticker/company mentions in
+#: a multi-ticker query (D-06/D-07), e.g. "Compare AAPL and MSFT". Matched as
+#: whole words (or a bare comma) so substrings inside other words (e.g.
+#: "Andover") are never treated as a split point.
+_CONNECTOR_SPLIT_RE: re.Pattern[str] = re.compile(
+    r"\b(?:and|vs\.?|versus|compare)\b|,", re.IGNORECASE
+)
+
+#: D-07: a research request may name at most 2 tickers.
+_MAX_TERMS: int = 2
+
+
+class TooManyTickersError(ValueError):
+    """Raised when a request names more than ``_MAX_TERMS`` tickers (D-07).
+
+    The router (``app/api/v1/research.py``) catches this and maps it to
+    ``HTTPException(status_code=400)`` — rejected before any resolve/ingest
+    work fans out (T-03-09).
+    """
 
 # ---------------------------------------------------------------------------
 # Seed company list — used when the companies table has no match (or no
@@ -155,12 +182,20 @@ class ResolutionResult:
                     the LLM's self-reported confidence for method "llm".
         method:     "exact" | "fuzzy" | "llm".
         candidates: Ranked candidate list (top 3), descending by score.
+        term:       The source text span this result was resolved from
+                    (plan 03-03, D-06) — the whole query on the single-term
+                    path, one split span per entry on the multi-term path, or
+                    the raw selected ticker on the ``selected_tickers`` fast
+                    path. Used by the router to build
+                    ``ClarificationResponse.ambiguous_terms`` covering only
+                    the unresolved term(s).
     """
 
     ticker: str | None
     confidence: float
     method: str
     candidates: list[CandidateMatch] = field(default_factory=list)
+    term: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +219,19 @@ def _generate_spans(tokens: list[str], max_span_words: int = _MAX_SPAN_WORDS) ->
         for i in range(n - size + 1):
             spans.append(" ".join(tokens[i : i + size]).lower())
     return spans
+
+
+def _split_terms(raw_query: str) -> list[str]:
+    """Split *raw_query* into candidate ticker/company terms (D-06/D-07).
+
+    Splits on comparison connectors (see ``_CONNECTOR_SPLIT_RE``) and strips
+    whitespace from each resulting span, dropping empty spans. A query with
+    no connector (e.g. "Tell me about Apple") is not split at all — the
+    whole query becomes the single term, preserving the pre-03-03
+    single-term resolution behavior exactly.
+    """
+    spans = _CONNECTOR_SPLIT_RE.split(raw_query)
+    return [span.strip() for span in spans if span.strip()]
 
 
 def _parse_llm_extraction(raw: str) -> tuple[str, float] | None:
@@ -260,6 +308,83 @@ def _score_candidates(spans: list[str], universe: dict[str, str]) -> list[Candid
 _LLM_MAX_TOKENS: int = 256
 
 
+async def _resolve_term(
+    term: str, known_tickers: set[str], universe: dict[str, str]
+) -> ResolutionResult:
+    """Resolve a single term (the whole query, or one split span) to a result.
+
+    Runs the cheap local match first (D-01) — exact ticker-token match, then
+    fuzzy company-name match — and only attempts the rate-limited LLM
+    fallback (via ``call_groq``) when the fuzzy path is inconclusive.
+    Identical cascade to the pre-03-03 single-term ``resolve`` body; factored
+    out so ``resolve`` can call it once per split term (D-06).
+    """
+    tokens = _TOKEN_RE.findall(term)
+    upper_tokens = [t.upper() for t in tokens]
+
+    # --- Exact path: a token that is both ticker-shaped AND a known ticker ---
+    for token in upper_tokens:
+        if _TICKER_RE.match(token) and token in known_tickers:
+            return ResolutionResult(
+                ticker=token,
+                confidence=1.0,
+                method="exact",
+                candidates=[CandidateMatch(ticker=token, name=None, score=1.0)],
+                term=term,
+            )
+
+    # --- Fuzzy path: score candidate company names against term spans ---
+    spans = _generate_spans(tokens)
+    scored = await _run_sync(_score_candidates, spans, universe)
+    top_candidates = scored[:3]
+
+    if scored and scored[0].score >= _MIN_USABLE_SCORE:
+        best = scored[0]
+        return ResolutionResult(
+            ticker=best.ticker,
+            confidence=best.score,
+            method="fuzzy",
+            candidates=top_candidates,
+            term=term,
+        )
+
+    # --- LLM fallback (D-01/D-03): fuzzy path is inconclusive ---
+    fallback_confidence = scored[0].score if scored else 0.0
+    try:
+        raw_extraction = await call_groq(
+            _build_extraction_prompt(term), max_tokens=_LLM_MAX_TOKENS
+        )
+    except Exception:  # noqa: BLE001 — NotImplementedError (Phase 1-3 stub)
+        # or any transient Groq failure degrades to the ranked fuzzy
+        # candidates; the LLM fallback must never break the request (D-01).
+        return ResolutionResult(
+            ticker=None,
+            confidence=fallback_confidence,
+            method="fuzzy",
+            candidates=top_candidates,
+            term=term,
+        )
+
+    parsed = _parse_llm_extraction(raw_extraction)
+    if parsed is None:
+        return ResolutionResult(
+            ticker=None,
+            confidence=fallback_confidence,
+            method="fuzzy",
+            candidates=top_candidates,
+            term=term,
+        )
+
+    llm_ticker, llm_confidence = parsed
+    return ResolutionResult(
+        ticker=llm_ticker,
+        confidence=llm_confidence,
+        method="llm",
+        candidates=top_candidates,
+        term=term,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API — resolve
 # ---------------------------------------------------------------------------
@@ -272,13 +397,15 @@ async def resolve(
 ) -> list[ResolutionResult]:
     """Resolve *raw_query* to zero or more ``ResolutionResult`` entries.
 
-    Runs the cheap local match first (D-01) — exact ticker-token match, then
-    fuzzy company-name match — and only attempts the rate-limited LLM
-    fallback (via ``call_groq``) when the fuzzy path is inconclusive.
+    Splits the free-text path into up to 2 candidate terms on comparison
+    connectors (D-06/D-07) and resolves each term independently through the
+    exact/fuzzy/LLM cascade (D-01). A query with no connector resolves as a
+    single term identical to the pre-03-03 behavior.
 
     Args:
-        raw_query: Free-text research request, e.g. "Tell me about Apple".
-                   Ignored entirely when ``selected_tickers`` is provided.
+        raw_query: Free-text research request, e.g. "Tell me about Apple" or
+                   "Compare AAPL and MSFT". Ignored entirely when
+                   ``selected_tickers`` is provided.
         session:   Async DB session used to look up ``Company`` rows. May be
                    None, in which case resolution falls back entirely to
                    ``_SEED_COMPANIES`` (used by pure unit tests with no DB).
@@ -294,8 +421,13 @@ async def resolve(
 
     Returns:
         One ``ResolutionResult`` per selected ticker on the
-        ``selected_tickers`` fast path, otherwise a single-element list for
-        the free-text resolution path (exact / fuzzy / llm).
+        ``selected_tickers`` fast path, otherwise one ``ResolutionResult``
+        per split term (1 or 2) on the free-text path.
+
+    Raises:
+        TooManyTickersError: If the free-text path splits into more than 2
+                              terms (D-07). Raised before any DB lookup or
+                              fuzzy/LLM work runs (T-03-09).
     """
     # --- Fast path: pre-confirmed selection from a resubmit (D-04, REQST-04) ---
     if selected_tickers:
@@ -310,31 +442,26 @@ async def resolve(
                     confidence=1.0,
                     method="exact",
                     candidates=[CandidateMatch(ticker=ticker, name=None, score=1.0)],
+                    term=ticker,
                 )
             )
         return results
 
-    tokens = _TOKEN_RE.findall(raw_query)
-    upper_tokens = [t.upper() for t in tokens]
+    # --- Multi-term extraction (D-06/D-07): split before any expensive work ---
+    terms = _split_terms(raw_query)
+    if len(terms) > _MAX_TERMS:
+        raise TooManyTickersError(
+            f"A research request may name at most {_MAX_TERMS} tickers "
+            f"(found {len(terms)})"
+        )
+    if not terms:
+        terms = [raw_query]
 
-    # --- Exact path: a token that is both ticker-shaped AND a known ticker ---
     known_tickers: set[str] = set(_SEED_COMPANIES.values())
     if session is not None:
         rows = await session.execute(select(Company.ticker))
         known_tickers |= {row[0] for row in rows.fetchall()}
 
-    for token in upper_tokens:
-        if _TICKER_RE.match(token) and token in known_tickers:
-            return [
-                ResolutionResult(
-                    ticker=token,
-                    confidence=1.0,
-                    method="exact",
-                    candidates=[CandidateMatch(ticker=token, name=None, score=1.0)],
-                )
-            ]
-
-    # --- Fuzzy path: score candidate company names against query spans ---
     universe: dict[str, str] = dict(_SEED_COMPANIES)
     if session is not None:
         rows = await session.execute(select(Company.ticker, Company.name))
@@ -342,56 +469,4 @@ async def resolve(
             if name:
                 universe[name.lower()] = ticker
 
-    spans = _generate_spans(tokens)
-    scored = await _run_sync(_score_candidates, spans, universe)
-    top_candidates = scored[:3]
-
-    if scored and scored[0].score >= _MIN_USABLE_SCORE:
-        best = scored[0]
-        return [
-            ResolutionResult(
-                ticker=best.ticker,
-                confidence=best.score,
-                method="fuzzy",
-                candidates=top_candidates,
-            )
-        ]
-
-    # --- LLM fallback (D-01/D-03): fuzzy path is inconclusive ---
-    fallback_confidence = scored[0].score if scored else 0.0
-    try:
-        raw_extraction = await call_groq(
-            _build_extraction_prompt(raw_query), max_tokens=_LLM_MAX_TOKENS
-        )
-    except Exception:  # noqa: BLE001 — NotImplementedError (Phase 1-3 stub)
-        # or any transient Groq failure degrades to the ranked fuzzy
-        # candidates; the LLM fallback must never break the request (D-01).
-        return [
-            ResolutionResult(
-                ticker=None,
-                confidence=fallback_confidence,
-                method="fuzzy",
-                candidates=top_candidates,
-            )
-        ]
-
-    parsed = _parse_llm_extraction(raw_extraction)
-    if parsed is None:
-        return [
-            ResolutionResult(
-                ticker=None,
-                confidence=fallback_confidence,
-                method="fuzzy",
-                candidates=top_candidates,
-            )
-        ]
-
-    llm_ticker, llm_confidence = parsed
-    return [
-        ResolutionResult(
-            ticker=llm_ticker,
-            confidence=llm_confidence,
-            method="llm",
-            candidates=top_candidates,
-        )
-    ]
+    return [await _resolve_term(term, known_tickers, universe) for term in terms]

@@ -10,8 +10,10 @@ Mounted under /api/v1 by the v1 aggregator, yielding:
 
 Implements REQST-01 (free-text intake), REQST-02 (auto-resolve >= 0.85
 without prompting), REQST-03 (strict clarification gate — no plan/memo until
-every ticker resolves), and REQST-04 (resubmitting with ``selected_tickers``
-resolves straight to a plan), per 03-CONTEXT.md D-01 through D-04.
+every ticker resolves), REQST-04 (resubmitting with ``selected_tickers``
+resolves straight to a plan), and REQST-05 (multi-ticker requests — up to 2
+tickers per query, all-or-nothing gating, >2 rejected with 400), per
+03-CONTEXT.md D-01 through D-07.
 
 Security boundaries (STRIDE T-03-01, T-03-04, T-03-06):
 - T-03-04: /research derives the user ONLY from get_current_user; never from
@@ -32,7 +34,7 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -179,19 +181,26 @@ async def create_research_request(
       2. Run ``ticker_resolver.resolve`` — when ``body.selected_tickers`` is
          provided (a resubmit after a prior ``ClarificationResponse``,
          REQST-04), it takes an exact-match fast path with no fuzzy/LLM work.
-         Otherwise the cheap local match (exact + fuzzy) runs first, falling
-         back to a rate-limited LLM extraction only when fuzzy is
-         inconclusive (D-01).
+         Otherwise the free-text path splits the query into up to 2 terms on
+         comparison connectors (D-06/D-07) and each term runs the cheap local
+         match (exact + fuzzy) first, falling back to a rate-limited LLM
+         extraction only when fuzzy is inconclusive (D-01). A query naming
+         more than 2 tickers raises ``TooManyTickersError``, mapped here to
+         ``HTTPException(400)`` (D-07) before any resolve/ingest work fans
+         out.
       3. If every resolved term reaches ``_CONFIDENCE_THRESHOLD`` with a
          non-None ticker, set ``request.status = "RESOLVED"``, persist a
-         ``ResearchPlan``, and trigger ``ingestion_service.ingest_ticker``
-         per ticker (non-fatal — ingestion failures are folded into
+         single ``ResearchPlan`` with the de-duplicated list of resolved
+         tickers, and trigger ``ingestion_service.ingest_ticker`` per ticker
+         (non-fatal — ingestion failures are folded into
          ``ingestion_status``, never raised).
-      4. Otherwise set ``request.status = "NEEDS_CLARIFICATION"``, commit
-         ONLY the ``ResearchRequest`` row, and return a
-         ``ClarificationResponse`` with the top-3 candidates — no
+      4. Otherwise (all-or-nothing, D-06) set ``request.status =
+         "NEEDS_CLARIFICATION"``, commit ONLY the ``ResearchRequest`` row,
+         and return a ``ClarificationResponse`` whose ``ambiguous_terms`` and
+         ``candidates`` cover only the unresolved term(s) — no
          ``ResearchPlan``/``ResearchMemo`` is created on this path (SC#2,
-         REQST-03, D-06 all-or-nothing rule).
+         REQST-03, D-06 all-or-nothing rule), even when other terms in the
+         same request resolved unambiguously.
 
     Args:
         body:    Validated request body containing the raw free-text query
@@ -210,17 +219,27 @@ async def create_research_request(
     session.add(request)
     await session.flush()  # populate request.id for the ResearchPlan FK below
 
-    results = await ticker_resolver.resolve(
-        body.raw_query, session=session, selected_tickers=body.selected_tickers
-    )
+    try:
+        results = await ticker_resolver.resolve(
+            body.raw_query, session=session, selected_tickers=body.selected_tickers
+        )
+    except ticker_resolver.TooManyTickersError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    resolved_ok = bool(results) and all(
-        r.confidence >= _CONFIDENCE_THRESHOLD and r.ticker is not None
+    # D-06 all-or-nothing gate: every term (1 or 2) must resolve at or above
+    # the auto-resolve threshold, or the WHOLE request is treated as
+    # ambiguous — not just the unresolved term(s).
+    unresolved = [
+        r
         for r in results
-    )
+        if r.ticker is None or r.confidence < _CONFIDENCE_THRESHOLD
+    ]
 
-    if resolved_ok:
-        resolved_tickers = [r.ticker for r in results if r.ticker is not None]
+    if results and not unresolved:
+        # De-duplicated in case a query names the same ticker twice.
+        resolved_tickers = list(
+            dict.fromkeys(r.ticker for r in results if r.ticker is not None)
+        )
         request.status = "RESOLVED"
         plan = ResearchPlan(
             request_id=request.id,
@@ -256,11 +275,19 @@ async def create_research_request(
     # Ambiguous — persist ONLY the ResearchRequest row (status flipped to
     # NEEDS_CLARIFICATION); no ResearchPlan is instantiated at all on this
     # branch, so no ResearchMemo can ever exist for it either (SC#2, REQST-03,
-    # D-06 all-or-nothing rule).
+    # D-06 all-or-nothing rule). ambiguous_terms/candidates cover ONLY the
+    # unresolved term(s) — a term that already resolved unambiguously is not
+    # re-surfaced, even though the request as a whole still blocks.
     request.status = "NEEDS_CLARIFICATION"
     await session.commit()
-    ambiguous_terms = [body.raw_query]
-    top_candidates = results[0].candidates[:3] if results else []
+    ambiguous_source = unresolved or results
+    ambiguous_terms = [r.term for r in ambiguous_source if r.term] or [
+        body.raw_query
+    ]
+    top_candidates: list[ticker_resolver.CandidateMatch] = []
+    for r in ambiguous_source:
+        top_candidates.extend(r.candidates)
+    top_candidates = top_candidates[:3]
     return ClarificationResponse(
         request_id=str(request.id),
         ambiguous_terms=ambiguous_terms,
