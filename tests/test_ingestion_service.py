@@ -18,6 +18,8 @@ Coverage:
   - test_ingest_pdf_user_scoped        — chunks tagged with uploader's user_id (INGEST-03)
   - test_pdf_failure_returns_warning   — unparseable PDF → source_warning, no exception
   - test_pdf_oversized_rejected        — >50 MB bytes rejected before fitz.open (T-02-03)
+  - test_pdf_invalid_form_type_rejected      — non-10-K/10-Q form_type rejected (WR-04)
+  - test_pdf_invalid_period_of_report_rejected — non-ISO period_of_report rejected (WR-04)
 """
 
 from __future__ import annotations
@@ -448,6 +450,60 @@ async def test_pdf_oversized_rejected():
     mock_fitz.open.assert_not_called()
     mock_embed.assert_not_called()
     assert result.source_warnings, "Oversized PDF must produce a source_warning"
+
+
+@pytest.mark.anyio
+async def test_pdf_invalid_form_type_rejected():
+    """ingest_pdf raises ValueError for a form_type outside {10-K, 10-Q} (WR-04).
+
+    An unvalidated form_type would otherwise flow into ChromaDB metadata,
+    PostgreSQL columns, and the canonical_id computation unchecked.
+    """
+    from app.services.ingestion_service import ingest_pdf
+
+    mock_session = _make_session_mock()
+
+    with (
+        patch("app.services.ingestion_service.fitz") as mock_fitz,
+        patch("app.services.ingestion_service.embed_and_store") as mock_embed,
+    ):
+        with pytest.raises(ValueError, match="Invalid form_type"):
+            await ingest_pdf(
+                file_bytes=b"%PDF-1.4 fake",
+                user_id="user-a-uuid-1234",
+                ticker="AAPL",
+                form_type="<script>alert(1)</script>",
+                period_of_report="2023-09-30",
+                session=mock_session,
+            )
+
+    mock_fitz.open.assert_not_called()
+    mock_embed.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_pdf_invalid_period_of_report_rejected():
+    """ingest_pdf raises ValueError for a non-ISO period_of_report (WR-04)."""
+    from app.services.ingestion_service import ingest_pdf
+
+    mock_session = _make_session_mock()
+
+    with (
+        patch("app.services.ingestion_service.fitz") as mock_fitz,
+        patch("app.services.ingestion_service.embed_and_store") as mock_embed,
+    ):
+        with pytest.raises(ValueError, match="Invalid period_of_report"):
+            await ingest_pdf(
+                file_bytes=b"%PDF-1.4 fake",
+                user_id="user-a-uuid-1234",
+                ticker="AAPL",
+                form_type="10-K",
+                period_of_report="not-a-date",
+                session=mock_session,
+            )
+
+    mock_fitz.open.assert_not_called()
+    mock_embed.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

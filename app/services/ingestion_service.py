@@ -117,6 +117,45 @@ def _validate_ticker(ticker: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# WR-04: form_type / period_of_report validation (PDF upload path)
+# ---------------------------------------------------------------------------
+
+#: SEC form types accepted by this pipeline — mirrors the "10-K,10-Q" filter
+#: already used in the EDGAR EFTS search (ingest_ticker).
+_FORM_TYPE_RE: re.Pattern[str] = re.compile(r"^10-[KQ]$")
+
+#: ISO date (YYYY-MM-DD) — the format EDGAR reports period_of_report in.
+_PERIOD_RE: re.Pattern[str] = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_form_type(form_type: str) -> str:
+    """Validate *form_type* against the accepted SEC form types.
+
+    Raises:
+        ValueError: If ``form_type`` is not exactly ``"10-K"`` or ``"10-Q"``
+                    (WR-04 — untrusted Form field otherwise flows unvalidated
+                    into ChromaDB metadata, PostgreSQL columns, and canonical_id).
+    """
+    if not _FORM_TYPE_RE.match(form_type):
+        raise ValueError(f"Invalid form_type {form_type!r}. Expected '10-K' or '10-Q'.")
+    return form_type
+
+
+def _validate_period_of_report(period_of_report: str) -> str:
+    """Validate *period_of_report* is an ISO YYYY-MM-DD date string.
+
+    Raises:
+        ValueError: If ``period_of_report`` does not match ``YYYY-MM-DD``
+                    (WR-04).
+    """
+    if not _PERIOD_RE.match(period_of_report):
+        raise ValueError(
+            f"Invalid period_of_report {period_of_report!r}. Expected YYYY-MM-DD."
+        )
+    return period_of_report
+
+
+# ---------------------------------------------------------------------------
 # IngestionResult
 # ---------------------------------------------------------------------------
 
@@ -504,9 +543,12 @@ async def ingest_pdf(
         ``IngestionResult`` — never raises; failures surface as ``source_warnings``.
 
     Raises:
-        ValueError: If *ticker* contains invalid characters (T-02-02).
+        ValueError: If *ticker* contains invalid characters (T-02-02), or if
+                    *form_type*/*period_of_report* fail validation (WR-04).
     """
     ticker = _validate_ticker(ticker)
+    form_type = _validate_form_type(form_type)
+    period_of_report = _validate_period_of_report(period_of_report)
     result = IngestionResult(ticker=ticker)
 
     # --- DoS mitigation: 50 MB cap BEFORE parse (T-02-03) ---
