@@ -28,8 +28,17 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_SECONDS: int = 86400  # 24 hours
 
-    # EDGAR policy (User-Agent required on every request)
-    EDGAR_USER_AGENT: str = "Vantage/1.0 vishwak.vel@gmail.com"
+    # NOTE (WR-01): EDGAR_USER_AGENT is intentionally NOT a Settings field.
+    # app.services.edgar_client.EDGAR_USER_AGENT is the single source of truth
+    # for the SEC-mandated User-Agent header, and it is read at MODULE IMPORT
+    # time by the module-level `edgar_client` singleton. Sourcing it from
+    # Settings here would require calling get_settings() during that import,
+    # which eagerly validates DATABASE_URL/JWT_SECRET_KEY as well — breaking
+    # every test/script that imports edgar_client (directly or transitively
+    # via ingestion_service) without a full .env configured. If an
+    # environment-level override becomes necessary, wire edgar_client to read
+    # os.environ["EDGAR_USER_AGENT"] directly (with the current string as
+    # fallback) rather than reintroducing a Settings field here.
 
     # ChromaDB — vector store (host-machine dev targets Docker-exposed port 8001)
     # In Docker network the api service overrides to host="chromadb" port=8000 via env
