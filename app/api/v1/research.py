@@ -8,8 +8,10 @@ Endpoints:
 Mounted under /api/v1 by the v1 aggregator, yielding:
   /api/v1/research
 
-Implements REQST-01 (free-text intake) and REQST-02 (auto-resolve >= 0.85
-without prompting), per 03-CONTEXT.md D-01/D-02.
+Implements REQST-01 (free-text intake), REQST-02 (auto-resolve >= 0.85
+without prompting), REQST-03 (strict clarification gate — no plan/memo until
+every ticker resolves), and REQST-04 (resubmitting with ``selected_tickers``
+resolves straight to a plan), per 03-CONTEXT.md D-01 through D-04.
 
 Security boundaries (STRIDE T-03-01, T-03-04, T-03-06):
 - T-03-04: /research derives the user ONLY from get_current_user; never from
@@ -20,10 +22,15 @@ Security boundaries (STRIDE T-03-01, T-03-04, T-03-06):
 - T-03-01: only tickers that resolve via ticker_resolver (which itself
   enforces the 1-10 uppercase alphanumeric _TICKER_RE contract) ever reach
   ingestion_service.ingest_ticker, which re-validates independently
-  (defense in depth, mirrors T-02-02).
+  (defense in depth, mirrors T-02-02). ``selected_tickers`` is validated
+  twice — once in ``ResearchRequestBody.validate_selected_tickers`` and again
+  inside ``ticker_resolver.resolve``'s fast path — before it can influence
+  ingestion.
 """
 
 from __future__ import annotations
+
+import re
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, field_validator
@@ -43,6 +50,13 @@ _CONFIDENCE_THRESHOLD: float = 0.85
 #: T-03-06: caps the untrusted raw_query body field before any resolve work.
 _MAX_QUERY_LENGTH: int = 2000
 
+#: D-07: multi-ticker requests are capped at 2 tickers.
+_MAX_SELECTED_TICKERS: int = 2
+
+#: Identical contract to ticker_resolver._TICKER_RE — 1-10 uppercase
+#: alphanumeric characters (T-03-01 defense in depth).
+_TICKER_RE: re.Pattern[str] = re.compile(r"^[A-Z0-9]{1,10}$")
+
 
 # ---------------------------------------------------------------------------
 # Request / Response models
@@ -56,9 +70,15 @@ class ResearchRequestBody(BaseModel):
         raw_query: Free-text research request, e.g. "Tell me about Apple".
                    Validated non-empty and length-capped at 2000 characters
                    (T-03-06 DoS mitigation).
+        selected_tickers: Optional resubmit payload (REQST-04) — the ticker(s)
+                   the user picked from a prior ``ClarificationResponse``'s
+                   candidates. Each entry is uppercased and validated against
+                   the 1-10 uppercase-alphanumeric ticker contract; the whole
+                   list is capped at 2 entries (D-07).
     """
 
     raw_query: str
+    selected_tickers: list[str] | None = None
 
     @field_validator("raw_query")
     @classmethod
@@ -76,6 +96,32 @@ class ResearchRequestBody(BaseModel):
                 f"raw_query exceeds {_MAX_QUERY_LENGTH} character limit"
             )
         return v
+
+    @field_validator("selected_tickers")
+    @classmethod
+    def validate_selected_tickers(cls, v: list[str] | None) -> list[str] | None:
+        """Uppercase + validate each selected ticker; reject more than 2 (D-07).
+
+        Raises:
+            ValueError: If the list has more than ``_MAX_SELECTED_TICKERS``
+                        entries, or any entry fails the 1-10 uppercase
+                        alphanumeric ticker contract (T-03-01 defense in
+                        depth — re-validated again in
+                        ``ticker_resolver.resolve``'s fast path).
+        """
+        if v is None:
+            return v
+        if len(v) > _MAX_SELECTED_TICKERS:
+            raise ValueError(
+                f"selected_tickers accepts at most {_MAX_SELECTED_TICKERS} entries"
+            )
+        normalized: list[str] = []
+        for ticker in v:
+            candidate = ticker.strip().upper()
+            if not _TICKER_RE.match(candidate):
+                raise ValueError(f"invalid ticker in selected_tickers: {ticker!r}")
+            normalized.append(candidate)
+        return normalized
 
 
 class CandidateMatch(BaseModel):
@@ -130,19 +176,26 @@ async def create_research_request(
 
     Flow:
       1. Persist a ``ResearchRequest`` row with the raw query.
-      2. Run ``ticker_resolver.resolve`` — the cheap local match (exact +
-         fuzzy) runs first; no Groq call happens on this path (D-01).
+      2. Run ``ticker_resolver.resolve`` — when ``body.selected_tickers`` is
+         provided (a resubmit after a prior ``ClarificationResponse``,
+         REQST-04), it takes an exact-match fast path with no fuzzy/LLM work.
+         Otherwise the cheap local match (exact + fuzzy) runs first, falling
+         back to a rate-limited LLM extraction only when fuzzy is
+         inconclusive (D-01).
       3. If every resolved term reaches ``_CONFIDENCE_THRESHOLD`` with a
-         non-None ticker, persist a ``ResearchPlan`` and trigger
-         ``ingestion_service.ingest_ticker`` per ticker (non-fatal —
-         ingestion failures are folded into ``ingestion_status``, never
-         raised).
-      4. Otherwise return a ``ClarificationResponse`` with the top-3
-         candidates and create NO ``ResearchPlan`` (full clarification UX
-         lands in plan 03-02).
+         non-None ticker, set ``request.status = "RESOLVED"``, persist a
+         ``ResearchPlan``, and trigger ``ingestion_service.ingest_ticker``
+         per ticker (non-fatal — ingestion failures are folded into
+         ``ingestion_status``, never raised).
+      4. Otherwise set ``request.status = "NEEDS_CLARIFICATION"``, commit
+         ONLY the ``ResearchRequest`` row, and return a
+         ``ClarificationResponse`` with the top-3 candidates — no
+         ``ResearchPlan``/``ResearchMemo`` is created on this path (SC#2,
+         REQST-03, D-06 all-or-nothing rule).
 
     Args:
-        body:    Validated request body containing the raw free-text query.
+        body:    Validated request body containing the raw free-text query
+                 and an optional ``selected_tickers`` resubmit payload.
         user:    Authenticated user resolved from the Bearer JWT (T-03-04);
                  the ONLY source of user identity — never a body field.
         session: Injected async DB session.
@@ -157,7 +210,9 @@ async def create_research_request(
     session.add(request)
     await session.flush()  # populate request.id for the ResearchPlan FK below
 
-    results = await ticker_resolver.resolve(body.raw_query, session=session)
+    results = await ticker_resolver.resolve(
+        body.raw_query, session=session, selected_tickers=body.selected_tickers
+    )
 
     resolved_ok = bool(results) and all(
         r.confidence >= _CONFIDENCE_THRESHOLD and r.ticker is not None
@@ -166,6 +221,7 @@ async def create_research_request(
 
     if resolved_ok:
         resolved_tickers = [r.ticker for r in results if r.ticker is not None]
+        request.status = "RESOLVED"
         plan = ResearchPlan(
             request_id=request.id,
             user_id=user.id,
@@ -197,8 +253,11 @@ async def create_research_request(
             ingestion_status=ingestion_status,
         )
 
-    # Ambiguous — persist the ResearchRequest itself, but create NO
-    # ResearchPlan until every ticker resolves (D-06 all-or-nothing rule).
+    # Ambiguous — persist ONLY the ResearchRequest row (status flipped to
+    # NEEDS_CLARIFICATION); no ResearchPlan is instantiated at all on this
+    # branch, so no ResearchMemo can ever exist for it either (SC#2, REQST-03,
+    # D-06 all-or-nothing rule).
+    request.status = "NEEDS_CLARIFICATION"
     await session.commit()
     ambiguous_terms = [body.raw_query]
     top_candidates = results[0].candidates[:3] if results else []
