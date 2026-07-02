@@ -86,11 +86,21 @@ def test_upgrade_creates_all_nine_tables() -> None:
     alembic_cfg = Config("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", ASYNC_TEST_DB_URL)
 
-    # Ensure clean slate before upgrading
+    # Ensure clean slate before upgrading. Alembic's downgrade chain depends on
+    # every migration reversing cleanly, which isn't guaranteed to be re-runnable
+    # back-to-back (FK drop ordering, a partially-applied prior run leaving
+    # alembic_version stamped with the tables already gone, etc.) — dropping and
+    # recreating the schema directly is unconditionally clean regardless of history.
+    import psycopg2
+
+    conn = psycopg2.connect(SYNC_TEST_DB_URL)
+    conn.autocommit = True
     try:
-        command.downgrade(alembic_cfg, "base")
-    except Exception:
-        pass  # Schema may already be empty on a fresh container
+        cur = conn.cursor()
+        cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        cur.close()
+    finally:
+        conn.close()
 
     command.upgrade(alembic_cfg, "head")
 
