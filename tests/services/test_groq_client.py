@@ -1,17 +1,22 @@
-"""Unit tests for Groq async token-bucket rate limiter.
+"""Unit tests for the Groq async token-bucket rate limiter and call_groq.
 
 Tests verify:
   - AsyncTokenBucketRateLimiter.acquire() completes immediately on a full bucket
   - acquire() blocks (awaits) when tokens are exhausted — never raises, never drops
   - groq_rate_limiter module-level singleton exists with correct capacity
-  - call_groq() raises NotImplementedError (Phase 1 stub)
+  - call_groq() performs a real (SDK-boundary-mocked) Groq chat-completion:
+    it acquires the rate limiter before calling the SDK, returns the
+    completion text, defaults to llama-3.3-70b-versatile, and invokes the
+    SDK with the expected messages/model/max_tokens.
 """
 
 import asyncio
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import app.services.groq_client as groq_client_module
 from app.services.groq_client import (
     AsyncTokenBucketRateLimiter,
     call_groq,
@@ -129,20 +134,93 @@ async def test_acquire_concurrent_callers_all_complete() -> None:
 
 
 # ---------------------------------------------------------------------------
-# call_groq stub raises NotImplementedError
+# call_groq — real Groq chat-completion (SDK boundary mocked)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.anyio
-async def test_call_groq_raises_not_implemented() -> None:
-    """call_groq() is a Phase 1 stub — always raises NotImplementedError."""
-    with pytest.raises(NotImplementedError) as exc_info:
-        await call_groq("test prompt")
-    assert "Phase 1" in str(exc_info.value)
+class _FakeSettings:
+    """Minimal Settings stand-in exposing only what call_groq reads."""
+
+    GROQ_API_KEY = "test-groq-key-not-for-production"
+
+
+def _make_mock_client(content: str = "mocked completion text") -> MagicMock:
+    """Build a mock AsyncGroq client whose chat.completions.create returns *content*."""
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock(message=MagicMock(content=content))]
+    mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+    return mock_client
+
+
+@pytest.fixture(autouse=True)
+def _reset_client_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure every test starts with a clean module-level client singleton."""
+    monkeypatch.setattr(groq_client_module, "_client", None, raising=False)
+
+
+def test_call_groq_default_model_is_llama_3_3_70b_versatile() -> None:
+    """call_groq's default model parameter is llama-3.3-70b-versatile."""
+    import inspect
+
+    sig = inspect.signature(call_groq)
+    assert sig.parameters["model"].default == "llama-3.3-70b-versatile"
 
 
 @pytest.mark.anyio
-async def test_call_groq_raises_for_any_prompt() -> None:
-    """call_groq() raises regardless of prompt content."""
-    with pytest.raises(NotImplementedError):
-        await call_groq("", model="mixtral-8x7b-32768", max_tokens=512)
+async def test_call_groq_acquires_rate_limit_before_sdk_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """call_groq awaits groq_rate_limiter.acquire(max_tokens) before invoking the SDK."""
+    call_order: list[str] = []
+    original_acquire = groq_rate_limiter.acquire
+
+    async def _tracking_acquire(tokens: int) -> None:
+        call_order.append("acquire")
+        await original_acquire(tokens)
+
+    monkeypatch.setattr(groq_rate_limiter, "acquire", _tracking_acquire)
+
+    mock_client = _make_mock_client()
+
+    async def _tracking_create(*args: object, **kwargs: object) -> object:
+        call_order.append("sdk_call")
+        return mock_client.chat.completions.create.return_value
+
+    mock_client.chat.completions.create = AsyncMock(side_effect=_tracking_create)
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    await call_groq("test prompt", max_tokens=10)
+
+    assert call_order == ["acquire", "sdk_call"]
+
+
+@pytest.mark.anyio
+async def test_call_groq_returns_completion_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """call_groq returns response.choices[0].message.content."""
+    mock_client = _make_mock_client(content="hello from groq")
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    result = await call_groq("test prompt", max_tokens=10)
+
+    assert result == "hello from groq"
+
+
+@pytest.mark.anyio
+async def test_call_groq_invokes_sdk_with_expected_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AsyncGroq client is invoked with messages/model/max_tokens as specified."""
+    mock_client = _make_mock_client()
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    await call_groq("what is the ticker?", model="llama-3.3-70b-versatile", max_tokens=256)
+
+    mock_client.chat.completions.create.assert_awaited_once_with(
+        messages=[{"role": "user", "content": "what is the ticker?"}],
+        model="llama-3.3-70b-versatile",
+        max_tokens=256,
+    )

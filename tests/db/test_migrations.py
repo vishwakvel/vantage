@@ -24,6 +24,11 @@ from alembic.config import Config
 
 SYNC_TEST_DB_URL = "postgresql://vantage:vantage@localhost:5433/vantage_test"
 
+# migrations/env.py is unconditionally async (asyncio.run(run_async_migrations())),
+# so alembic commands need an async-driver URL — the sync URL above is only for the
+# raw psycopg2 connectivity check and post-migration table inspection below.
+ASYNC_TEST_DB_URL = "postgresql+asyncpg://vantage:vantage@localhost:5433/vantage_test"
+
 # All 9 domain tables created by the initial migration (plan 01-03)
 EXPECTED_TABLES = frozenset(
     {
@@ -79,7 +84,7 @@ def test_upgrade_creates_all_nine_tables() -> None:
         pytest.skip("test-postgres not running (docker-compose.test.yml)")
 
     alembic_cfg = Config("alembic.ini")
-    alembic_cfg.set_main_option("sqlalchemy.url", SYNC_TEST_DB_URL)
+    alembic_cfg.set_main_option("sqlalchemy.url", ASYNC_TEST_DB_URL)
 
     # Ensure clean slate before upgrading
     try:
