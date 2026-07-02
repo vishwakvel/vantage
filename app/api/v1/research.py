@@ -7,21 +7,27 @@ Endpoints:
 - POST /research/{plan_id}/documents → 200 ResearchDocumentResponse (private
   PDF attached to an owned plan) or 404 (plan not found/not owned) or 413
   (oversized upload)
+- POST /research/{plan_id}/run → 200 RunResponse (runs the compiled
+  FundamentalAnalysis -> Synthesis graph, persists a ResearchMemo, returns
+  per-agent statuses + memo status) or 404 (plan not found/not owned)
 
 Mounted under /api/v1 by the v1 aggregator, yielding:
   /api/v1/research
   /api/v1/research/{plan_id}/documents
+  /api/v1/research/{plan_id}/run
 
 Implements REQST-01 (free-text intake), REQST-02 (auto-resolve >= 0.85
 without prompting), REQST-03 (strict clarification gate — no plan/memo until
 every ticker resolves), REQST-04 (resubmitting with ``selected_tickers``
 resolves straight to a plan), REQST-05 (multi-ticker requests — up to 2
-tickers per query, all-or-nothing gating, >2 rejected with 400), and
-REQST-06 (private PDF attachment to an owned research plan), per
-03-CONTEXT.md D-01 through D-07.
+tickers per query, all-or-nothing gating, >2 rejected with 400), REQST-06
+(private PDF attachment to an owned research plan), per 03-CONTEXT.md D-01
+through D-07, and EXEC-02/EXEC-03/MEMO-01 (running the 2-agent graph and
+persisting a structured, cited, status-tracked ResearchMemo), per
+04-CONTEXT.md.
 
 Security boundaries (STRIDE T-03-01, T-03-02, T-03-03, T-03-04, T-03-05,
-T-03-06):
+T-03-06, T-04-IDOR, T-04-AUTHZ, T-04-5XX, T-04-INPUT):
 - T-03-04: /research derives the user ONLY from get_current_user; never from
   any request body field. An unauthenticated request returns 401/403 before
   any resolve/ingest work happens.
@@ -43,6 +49,21 @@ T-03-06):
 - T-03-05 (elevation of privilege): user_id passed to ``ingestion_service.
   ingest_pdf`` is sourced EXCLUSIVELY from the authenticated principal —
   there is no user_id form field on the document-attach endpoint.
+- T-04-IDOR (elevation of privilege): POST /research/{plan_id}/run uses the
+  identical ownership pattern as ``attach_document`` — ``ResearchPlan.id ==
+  plan_id AND ResearchPlan.user_id == user.id``; a non-owned or missing
+  plan_id returns 404 in both cases, never 403.
+- T-04-AUTHZ (spoofing): user identity for ``/run`` is sourced only from
+  ``get_current_user`` (JWT) — never from the path or body; unauthenticated
+  requests are rejected before any graph work.
+- T-04-5XX (DoS): the graph's node functions never raise (established in
+  04-02/04-03-PLAN.md) — ``/run`` adds no swallowing try/except around
+  ``ainvoke`` that would mask a genuine bug; it simply persists whatever
+  status the graph's own caught-exception handling already produced, so
+  agent failure yields a PARTIAL memo, not a 500.
+- T-04-INPUT (tampering): ``plan_id`` is validated via the ownership query
+  (must exist and be owned); the ticker passed into the graph is derived
+  from ``plan.resolved_tickers``, never from client input.
 """
 
 from __future__ import annotations
@@ -57,7 +78,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.services.ingestion_service as ingestion_service
 import app.services.ticker_resolver as ticker_resolver
 from app.core.dependencies import get_current_user, get_session
-from app.db.models import ResearchPlan, ResearchPlanStatus, ResearchRequest, User
+from app.db.models import (
+    ResearchMemo,
+    ResearchMemoStatus,
+    ResearchPlan,
+    ResearchPlanStatus,
+    ResearchRequest,
+    User,
+)
+from app.graph.research_graph import build_research_graph
+from app.ingestion.section_constants import SECTION_FUNDAMENTALS, SECTION_SYNTHESIS
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -186,6 +216,16 @@ class ResearchDocumentResponse(BaseModel):
     filings_ingested: int
     filings_cached: int
     source_warnings: list[str]
+
+
+class RunResponse(BaseModel):
+    """Returned by POST /research/{plan_id}/run (EXEC-02, MEMO-01)."""
+
+    memo_id: str
+    plan_id: str
+    status: str
+    fundamentals_status: str
+    synthesis_status: str
 
 
 # ---------------------------------------------------------------------------
@@ -425,4 +465,103 @@ async def attach_document(
         filings_ingested=ingest_result.filings_ingested,
         filings_cached=ingest_result.filings_cached,
         source_warnings=ingest_result.source_warnings,
+    )
+
+
+@router.post("/{plan_id}/run", response_model=RunResponse)
+async def run_plan(
+    plan_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunResponse:
+    """Run the compiled FundamentalAnalysis -> Synthesis graph for an owned plan.
+
+    Authentication is REQUIRED (T-04-AUTHZ) — an unauthenticated request
+    never reaches the handler body (401/403).
+
+    Ownership is checked against ``ResearchPlan.user_id == user.id``
+    (T-04-IDOR, OWASP A01) — a ``plan_id`` that does not exist OR does not
+    belong to the authenticated user returns 404 in both cases, never 403.
+
+    Builds the initial graph state from the owned plan (ticker sourced
+    exclusively from ``plan.resolved_tickers``, never client input —
+    T-04-INPUT) and invokes ``build_research_graph().ainvoke``. The node
+    functions never raise (04-02/04-03-PLAN.md), so no additional
+    try/except is added here that could mask a genuine bug (T-04-5XX) — the
+    already-caught agent statuses flow straight through to the persisted
+    memo.
+
+    Re-running a plan that already has a memo (D-03): the prior latest
+    ``ResearchMemo`` for this plan (by ``created_at`` desc) becomes the new
+    memo's ``parent_memo_id``, preserving lineage across re-runs.
+
+    Args:
+        plan_id: ResearchPlan UUID from the URL path.
+        user:    Authenticated user resolved from the Bearer JWT (T-04-AUTHZ);
+                 the ONLY source of user identity.
+        session: Injected async DB session.
+
+    Returns:
+        ``RunResponse`` with the new memo's id/status and each agent's
+        status.
+
+    Raises:
+        HTTPException: 404 if the plan does not exist or is not owned by
+                        ``user``.
+    """
+    result = await session.execute(
+        select(ResearchPlan).where(
+            ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id
+        )
+    )
+    plan = result.scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Research plan not found")
+
+    resolved = plan.resolved_tickers or []
+    ticker = resolved[0] if resolved else ""
+
+    parent_result = await session.execute(
+        select(ResearchMemo)
+        .where(ResearchMemo.plan_id == plan.id)
+        .order_by(ResearchMemo.created_at.desc())
+    )
+    parent = parent_result.scalars().first()
+
+    initial_state = {
+        "plan_id": str(plan.id),
+        "ticker": ticker,
+        "user_id": str(user.id),
+        "session": session,
+        "fundamentals_output": None,
+        "fundamentals_status": "",
+        "synthesis_output": None,
+        "synthesis_status": "",
+        "memo_status": "",
+    }
+    final_state = await build_research_graph().ainvoke(initial_state)
+
+    body = {
+        SECTION_FUNDAMENTALS: final_state.get("fundamentals_output"),
+        SECTION_SYNTHESIS: final_state.get("synthesis_output"),
+    }
+
+    memo = ResearchMemo(
+        plan_id=plan.id,
+        user_id=user.id,
+        ticker=ticker or None,
+        status=ResearchMemoStatus(final_state["memo_status"]),
+        body=body,
+        parent_memo_id=parent.id if parent else None,
+    )
+    session.add(memo)
+    await session.commit()
+    await session.refresh(memo)
+
+    return RunResponse(
+        memo_id=str(memo.id),
+        plan_id=str(plan.id),
+        status=memo.status.value,
+        fundamentals_status=final_state["fundamentals_status"],
+        synthesis_status=final_state["synthesis_status"],
     )

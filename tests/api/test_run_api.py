@@ -49,6 +49,7 @@ from tests.api.test_research_api import (
     RESEARCH_URL,
     _make_authed_client,
     _make_unauthed_client,
+    _seed_company,
     _seed_research_plan,
     _seed_user,
 )
@@ -116,6 +117,7 @@ async def test_run_happy_path_has_named_sections(
 ) -> None:
     """POST /run with full section coverage persists a memo with named sections."""
     user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL")
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
@@ -151,6 +153,7 @@ async def test_run_reports_per_agent_statuses(
 ) -> None:
     """Response body reports per-agent statuses and the overall memo status."""
     user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL")
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
@@ -178,6 +181,7 @@ async def test_run_partial_on_fundamentals_failure(
 ) -> None:
     """Zero retrieved chunks -> 200, memo PARTIAL, fundamentals agent FAILED."""
     user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL")
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
@@ -288,6 +292,7 @@ async def test_rerun_sets_parent_memo_id(
     """Running twice creates two ResearchMemo rows; the second's parent_memo_id
     equals the first's id."""
     user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL")
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
@@ -331,6 +336,7 @@ async def test_run_citations_present_in_fundamentals(
 ) -> None:
     """Fundamentals section citations each carry a canonical_id and non-empty quote."""
     user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="AAPL")
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
