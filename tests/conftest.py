@@ -30,6 +30,7 @@ from app.main import create_app
 TEST_DATABASE_URL = "postgresql+asyncpg://vantage:vantage@localhost:5433/vantage_test"
 TEST_REDIS_URL = "redis://localhost:6379/1"  # DB 1 isolates from dev (DB 0)
 TEST_JWT_SECRET = "test-jwt-secret-not-for-production"
+TEST_GROQ_API_KEY = "test-groq-key-not-for-production"
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,7 @@ def test_settings() -> Settings:
         JWT_SECRET_KEY=TEST_JWT_SECRET,
         JWT_ALGORITHM="HS256",
         JWT_ACCESS_TOKEN_EXPIRE_SECONDS=86400,
+        GROQ_API_KEY=TEST_GROQ_API_KEY,
     )
 
 

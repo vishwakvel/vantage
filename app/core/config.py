@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_SECONDS: int = 86400  # 24 hours
 
+    # Groq — required; no default (fails fast at startup)
+    GROQ_API_KEY: str
+
     # NOTE (WR-01): EDGAR_USER_AGENT is intentionally NOT a Settings field.
     # app.services.edgar_client.EDGAR_USER_AGENT is the single source of truth
     # for the SEC-mandated User-Agent header, and it is read at MODULE IMPORT
