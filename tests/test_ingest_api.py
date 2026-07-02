@@ -39,6 +39,7 @@ _TEST_SETTINGS = Settings(
     JWT_SECRET_KEY="test-jwt-secret",
     JWT_ALGORITHM="HS256",
     JWT_ACCESS_TOKEN_EXPIRE_SECONDS=86400,
+    GROQ_API_KEY="test-groq-key-not-for-production",
 )
 
 # ---------------------------------------------------------------------------
