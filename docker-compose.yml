@@ -24,7 +24,7 @@ services:
       retries: 5
 
   chromadb:
-    image: chromadb/chroma:0.5.0
+    image: chromadb/chroma:0.5.23
     ports:
       - "8001:8000"
     healthcheck:
@@ -39,6 +39,11 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://vantage:vantage@postgres:5432/vantage
+      REDIS_URL: redis://redis:6379/0
+      CHROMADB_HOST: chromadb
+      CHROMADB_PORT: "8000"
     depends_on:
       postgres:
         condition: service_healthy

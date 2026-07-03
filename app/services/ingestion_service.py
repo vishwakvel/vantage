@@ -48,9 +48,10 @@ from typing import Any
 
 import fitz  # PyMuPDF — lazy at call time; module-level import enables monkeypatching in tests
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Document, DocumentChunk, DocumentSourceType, DocumentVisibility
+from app.db.models import Company, Document, DocumentChunk, DocumentSourceType, DocumentVisibility
 from app.ingestion.chunker import section_aware_chunk
 from app.services.edgar_client import edgar_client
 from app.services.vector_store import (
@@ -205,45 +206,55 @@ def compute_canonical_id(ticker: str, form_type: str, period_of_report: str) -> 
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+async def _ensure_company_exists(ticker: str, session: AsyncSession) -> None:
+    """Upsert a minimal ``Company`` row for *ticker* if one doesn't exist.
+
+    ``Document.ticker`` is a foreign key into ``companies`` (Company entity
+    is the day-one source of truth for every ticker reference, per Phase 1).
+    Ticker resolution only *matches against* a company name — it never
+    persists a row — so a brand-new ticker with no prior research has no
+    ``Company`` row yet. Without this, the first ``Document`` insert for that
+    ticker raises a ``ForeignKeyViolationError``. Uses ``ON CONFLICT DO
+    NOTHING`` so concurrent ingestion calls for the same new ticker don't race.
+    """
+    stmt = (
+        pg_insert(Company)
+        .values(ticker=ticker)
+        .on_conflict_do_nothing(index_elements=["ticker"])
+    )
+    await session.execute(stmt)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
-def _find_primary_doc(index_data: dict[str, Any]) -> str | None:
-    """Extract the primary HTML/text filename from an EDGAR filing index JSON.
+def _find_primary_doc(filing_summary_xml: str) -> str | None:
+    """Extract the primary document filename from a filing's FilingSummary.xml.
 
-    EDGAR Archives filing index JSON structure::
+    A filing directory contains many auxiliary files (index pages, XBRL
+    viewer render pages ``R1.htm``...``Rn.htm``, exhibits, raw ``.txt``
+    submissions) that cannot be reliably told apart from the primary
+    document by filename pattern alone — exhibits are listed *before* the
+    primary document in the directory, and the self-referential index page
+    is named ``{accession}-index-headers.html`` / ``{accession}-index.html``
+    which a naive ``.htm``/``.html`` suffix check does not exclude.
 
-        {
-          "directory": {
-            "item": [
-              {"name": "{accession}-index.htm", ...},
-              {"name": "aapl-20230930.htm",      ...}
-            ]
-          }
-        }
-
-    Skips the ``*-index.htm`` self-referential index page.  Returns the first
-    ``.htm`` / ``.html`` / ``.txt`` document filename found.
+    ``FilingSummary.xml`` is EDGAR's own machine-readable manifest: every
+    ``<Report instance="...">`` element names the actual primary document,
+    making it the authoritative source rather than guessing from directory
+    ordering.
 
     Args:
-        index_data: Parsed JSON from ``{accession_clean}-index.json``.
+        filing_summary_xml: Raw text of ``FilingSummary.xml``.
 
     Returns:
-        Document filename string, or ``None`` if none is found.
+        Primary document filename string, or ``None`` if not found (e.g.
+        pre-XBRL filings, which fall outside our 3-year lookback window).
     """
-    try:
-        items = index_data.get("directory", {}).get("item", [])
-        for item in items:
-            name = str(item.get("name", ""))
-            if name.lower().endswith(("-index.htm", "-index.html")):
-                continue  # skip the filing index page itself
-            if name.lower().endswith((".htm", ".html", ".txt")):
-                return name
-    except (AttributeError, TypeError):
-        pass
-    return None
+    match = re.search(r'instance="([^"]+)"', filing_summary_xml)
+    return match.group(1) if match else None
 
 
 async def _ingest_one_filing(
@@ -287,18 +298,20 @@ async def _ingest_one_filing(
 
     # --- Non-cached path: download filing from SEC Archives ---
 
-    # Dashes stripped per EDGAR Archives URL convention
+    # Dashes stripped per EDGAR Archives directory-path convention
     # e.g. "0000320193-23-000106" → "000032019323000106"
     accession_clean = accession_no.replace("-", "")
-    index_path = (
-        f"/Archives/edgar/data/{cik}/{accession_clean}/"
-        f"{accession_clean}-index.json"
-    )
-    index_resp = await edgar_client.get_archive(index_path)
-    index_resp.raise_for_status()
-    index_data = index_resp.json()
+    # FilingSummary.xml is EDGAR's own XBRL manifest — its <Report
+    # instance="..."> attribute names the primary document authoritatively.
+    # Directory-listing heuristics are unreliable: exhibits are listed
+    # before the primary document, and the self-index page's filename
+    # ("{accession}-index-headers.html") isn't excluded by a naive
+    # .htm/.html suffix check.
+    summary_path = f"/Archives/edgar/data/{cik}/{accession_clean}/FilingSummary.xml"
+    summary_resp = await edgar_client.get_archive(summary_path)
+    summary_resp.raise_for_status()
 
-    primary_doc = _find_primary_doc(index_data)
+    primary_doc = _find_primary_doc(summary_resp.text)
     if not primary_doc:
         result.source_warnings.append(
             f"No primary document found for {ticker} {form_type} {period_of_report}"
@@ -410,6 +423,9 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
     ticker = _validate_ticker(ticker)
     result = IngestionResult(ticker=ticker)
 
+    # Every Document.ticker FK requires a Company row to already exist.
+    await _ensure_company_exists(ticker, session)
+
     # --- Pre-flight: check for existing EDGAR docs in PostgreSQL ---
     # If all canonical_ids for this ticker are already in ChromaDB, skip EDGAR
     # entirely on this run (INGEST-02: zero EDGAR calls on second run).
@@ -446,10 +462,11 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
         search_resp = await edgar_client.get(
             "/LATEST/search-index",
             params={
-                "q": f'"{ticker}"',
+                "entityName": ticker,
                 "forms": "10-K,10-Q",
                 "dateRange": "custom",
                 "startdt": three_years_ago,
+                "enddt": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             },
         )
         search_resp.raise_for_status()
@@ -465,11 +482,14 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
 
     for i, hit in enumerate(hits):
         source = hit.get("_source", {})
+        ciks = source.get("ciks") or [""]
+        root_forms = source.get("root_forms") or [""]
         filing_meta = {
-            "form_type": source.get("form_type", ""),
-            "period_of_report": source.get("period_of_report", ""),
-            "cik": source.get("cik", ""),
-            "accession_no": source.get("accession_no", ""),
+            "form_type": source.get("form", "") or root_forms[0],
+            "period_of_report": source.get("period_ending", ""),
+            # Archives URLs use the CIK without leading zeros.
+            "cik": str(int(ciks[0])) if ciks[0] else "",
+            "accession_no": source.get("adsh", ""),
         }
         try:
             await _ingest_one_filing(filing_meta, ticker, session, result)
@@ -550,6 +570,9 @@ async def ingest_pdf(
     form_type = _validate_form_type(form_type)
     period_of_report = _validate_period_of_report(period_of_report)
     result = IngestionResult(ticker=ticker)
+
+    # Every Document.ticker FK requires a Company row to already exist.
+    await _ensure_company_exists(ticker, session)
 
     # --- DoS mitigation: 50 MB cap BEFORE parse (T-02-03) ---
     if len(file_bytes) > _MAX_PDF_BYTES:
