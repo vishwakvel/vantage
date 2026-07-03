@@ -112,31 +112,36 @@ async def test_dedup_guard_no_edgar_call():
 # Task 2: ingest_ticker full flow — INGEST-01, INGEST-02, INGEST-04
 # ---------------------------------------------------------------------------
 
-#: Shared EDGAR EFTS search response with one 10-K hit for AAPL
+#: Shared EDGAR EFTS search response with one 10-K hit for AAPL.
+#: Mirrors the real efts.sec.gov/LATEST/search-index response shape —
+#: ciks (list, zero-padded), adsh, form/root_forms, period_ending.
 _SEARCH_RESPONSE_DATA = {
     "hits": {
         "hits": [
             {
                 "_source": {
-                    "form_type": "10-K",
-                    "period_of_report": "2023-09-30",
-                    "cik": "0000320193",
-                    "accession_no": "0000320193-23-000106",
+                    "form": "10-K",
+                    "root_forms": ["10-K"],
+                    "period_ending": "2023-09-30",
+                    "ciks": ["0000320193"],
+                    "adsh": "0000320193-23-000106",
                 }
             }
         ]
     }
 }
 
-#: EDGAR Archives filing index JSON (points to primary HTML document)
-_INDEX_RESPONSE_DATA = {
-    "directory": {
-        "item": [
-            {"name": "0000320193-23-000106-index.htm"},  # index page — must be skipped
-            {"name": "aapl-20230930.htm"},                # primary document
-        ]
-    }
-}
+#: EDGAR FilingSummary.xml — <Report instance="..."> names the primary document.
+#: Real filings list several <Report> elements (one per XBRL viewer page); only
+#: the first instance= match matters, so a single element is sufficient here.
+_FILING_SUMMARY_XML = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    "<FilingSummary>"
+    '<Report instance="aapl-20230930.htm">'
+    "<HtmlFileName>R1.htm</HtmlFileName>"
+    "</Report>"
+    "</FilingSummary>"
+)
 
 #: Minimal 10-K HTML with a recognisable Item 7 (MDA) section
 _FILING_HTML = (
@@ -157,9 +162,9 @@ def _make_search_resp() -> MagicMock:
 
 
 def _make_index_resp() -> MagicMock:
-    """Build a mock httpx.Response for an EDGAR Archives filing index."""
+    """Build a mock httpx.Response for an EDGAR FilingSummary.xml fetch."""
     resp = MagicMock()
-    resp.json.return_value = _INDEX_RESPONSE_DATA
+    resp.text = _FILING_SUMMARY_XML
     resp.raise_for_status = MagicMock()
     return resp
 
