@@ -1,0 +1,3 @@
+# Vantage
+
+Vantage takes a free-text research request — a ticker, an investment thesis, or a financial question — and turns it into a fully cited `ResearchMemo` by running it through a multi-agent LangGraph pipeline backed by a hybrid RAG index of SEC EDGAR filings. It's built with FastAPI, PostgreSQL, ChromaDB, and Groq-hosted LLMs, with Redis for rate limiting and session state, all orchestrated via Docker Compose. The current milestone (v1.0) proves the pipeline end-to-end with two agents (FundamentalAnalysis and Synthesis); future milestones add the remaining specialist agents, a Contradictions panel, and watchlist/alerting.
