@@ -25,6 +25,9 @@ asyncio_mode = "auto"
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "live: real external-API smoke tests, opt-in via RUN_LIVE_TESTS=1",
+]
 
 [tool.pyrefly]
 project_root = "."
