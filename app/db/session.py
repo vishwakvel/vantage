@@ -15,6 +15,7 @@ this module does not require ``DATABASE_URL`` to be present in the environment
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -57,6 +58,33 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
         async def route(session: AsyncSession = Depends(get_session)):
             result = await session.execute(select(User))
+    """
+    async with _get_session_factory()() as session:
+        yield session
+
+
+@asynccontextmanager
+async def session_scope() -> AsyncGenerator[AsyncSession, None]:
+    """Yield a fresh, independent ``AsyncSession`` for concurrent graph nodes.
+
+    This is the session source for LangGraph agent nodes that run
+    concurrently in the parallel fan-out (AGENT-05): each
+    ``async with session_scope()`` produces its own independent session, so
+    concurrent node writes never collide on one ``AsyncSession`` (a single
+    ``AsyncSession`` shared across concurrent coroutines raises asyncpg's
+    "another operation is in progress").
+
+    It reuses the existing lazy ``_get_session_factory()``, so importing
+    this module still never requires ``DATABASE_URL``.
+
+    Deliberately NOT a FastAPI dependency — request routes keep using
+    ``get_session``. This is for graph-node-local sessions only.
+
+    Example::
+
+        async with session_scope() as session:
+            session.add(some_row)
+            await session.commit()
     """
     async with _get_session_factory()() as session:
         yield session

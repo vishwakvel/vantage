@@ -79,6 +79,8 @@ import app.services.ingestion_service as ingestion_service
 import app.services.ticker_resolver as ticker_resolver
 from app.core.dependencies import get_current_user, get_session
 from app.db.models import (
+    AgentOutput,
+    AgentTask,
     ResearchMemo,
     ResearchMemoStatus,
     ResearchPlan,
@@ -87,7 +89,14 @@ from app.db.models import (
     User,
 )
 from app.graph.research_graph import build_research_graph
-from app.ingestion.section_constants import SECTION_FUNDAMENTALS, SECTION_SYNTHESIS
+from app.ingestion.section_constants import (
+    SECTION_COMPARABLES,
+    SECTION_FUNDAMENTALS,
+    SECTION_MACRO,
+    SECTION_RISKS,
+    SECTION_SENTIMENT,
+    SECTION_SYNTHESIS,
+)
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -108,6 +117,49 @@ _TICKER_RE: re.Pattern[str] = re.compile(r"^[A-Z0-9]{1,10}$")
 #: Mirrors ingest.py's _PDF_ENDPOINT_MAX_BYTES — enforced before the full
 #: body is buffered in memory (T-03-03 DoS mitigation, CR-03).
 _RESEARCH_DOC_MAX_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
+#: Maps each memo section constant to its AgentTask.agent_type string —
+#: used to source a failed/missing section's user-facing reason from that
+#: agent's persisted AgentOutput.missing_fields (EXEC-04).
+_AGENT_TYPE_BY_SECTION: dict[str, str] = {
+    SECTION_FUNDAMENTALS: "FundamentalAnalysis",
+    SECTION_SENTIMENT: "SentimentNLP",
+    SECTION_RISKS: "RiskAssessment",
+    SECTION_MACRO: "MacroSector",
+    SECTION_COMPARABLES: "ComparableCompanies",
+    SECTION_SYNTHESIS: "Synthesis",
+}
+
+#: Maps each memo section constant to its (output, status) AgentGraphState
+#: field names — drives the full-section memo body assembly (EXEC-04: every
+#: dispatched agent's section is present in the memo body, never omitted).
+_SECTION_STATE_FIELDS: dict[str, tuple[str, str]] = {
+    SECTION_FUNDAMENTALS: ("fundamentals_output", "fundamentals_status"),
+    SECTION_SENTIMENT: ("sentiment_output", "sentiment_status"),
+    SECTION_RISKS: ("risk_output", "risk_status"),
+    SECTION_MACRO: ("macro_output", "macro_status"),
+    SECTION_COMPARABLES: ("comparables_output", "comparables_status"),
+    SECTION_SYNTHESIS: ("synthesis_output", "synthesis_status"),
+}
+
+
+def _extract_reason(missing_fields: object) -> str | None:
+    """Normalize an ``AgentOutput.missing_fields`` JSON value into a single
+    user-facing reason string.
+
+    ``missing_fields`` shapes vary across the 6 agents introduced across
+    Phase 4/5 (a plain D-07 sentence string, a single-item list wrapping a
+    D-07 sentence, or FundamentalAnalysis/Synthesis's older raw
+    section/field-name list) — this normalizes any of those into one
+    string, or ``None`` when there is nothing to report (SUCCESS/FULL).
+    """
+    if missing_fields is None:
+        return None
+    if isinstance(missing_fields, str):
+        return missing_fields
+    if isinstance(missing_fields, list):
+        return "; ".join(str(item) for item in missing_fields) or None
+    return str(missing_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -219,12 +271,16 @@ class ResearchDocumentResponse(BaseModel):
 
 
 class RunResponse(BaseModel):
-    """Returned by POST /research/{plan_id}/run (EXEC-02, MEMO-01)."""
+    """Returned by POST /research/{plan_id}/run (EXEC-02, MEMO-01, AGENT-05/06)."""
 
     memo_id: str
     plan_id: str
     status: str
     fundamentals_status: str
+    sentiment_status: str
+    risk_status: str
+    macro_status: str
+    comparables_status: str
     synthesis_status: str
 
 
@@ -535,16 +591,55 @@ async def run_plan(
         "session": session,
         "fundamentals_output": None,
         "fundamentals_status": "",
+        "sentiment_output": None,
+        "sentiment_status": "",
+        "risk_output": None,
+        "risk_status": "",
+        "macro_output": None,
+        "macro_status": "",
+        "comparables_output": None,
+        "comparables_status": "",
         "synthesis_output": None,
         "synthesis_status": "",
         "memo_status": "",
     }
     final_state = await build_research_graph().ainvoke(initial_state)
 
-    body = {
-        SECTION_FUNDAMENTALS: final_state.get("fundamentals_output"),
-        SECTION_SYNTHESIS: final_state.get("synthesis_output"),
-    }
+    # EXEC-04: assemble the memo body across EVERY dispatched agent's
+    # section — a section is never dropped even when its agent failed. A
+    # present output (SUCCESS or a degraded-but-non-empty PARTIAL) is stored
+    # as-is; a None output (FAILED) is replaced with an explicit marker
+    # carrying a user-facing reason sourced from that agent's persisted
+    # AgentOutput.missing_fields, never silently omitted.
+    reason_result = await session.execute(
+        select(AgentTask.agent_type, AgentTask.created_at, AgentOutput.missing_fields)
+        .join(AgentOutput, AgentOutput.task_id == AgentTask.id)
+        .where(
+            AgentTask.plan_id == plan.id,
+            AgentTask.agent_type.in_(_AGENT_TYPE_BY_SECTION.values()),
+        )
+        .order_by(AgentTask.created_at.desc())
+    )
+    reasons_by_agent_type: dict[str, str | None] = {}
+    for agent_type, _created_at, missing_fields in reason_result.all():
+        # Latest AgentTask per agent_type wins — a plan may have prior runs'
+        # rows too (D-03 rerun lineage), and created_at desc surfaces this
+        # run's row first.
+        if agent_type not in reasons_by_agent_type:
+            reasons_by_agent_type[agent_type] = _extract_reason(missing_fields)
+
+    body: dict[str, Any] = {}
+    for section, (output_field, status_field) in _SECTION_STATE_FIELDS.items():
+        output = final_state.get(output_field)
+        if output is not None:
+            body[section] = output
+        else:
+            agent_type = _AGENT_TYPE_BY_SECTION[section]
+            body[section] = {
+                "narrative": None,
+                "status": final_state.get(status_field),
+                "reason": reasons_by_agent_type.get(agent_type),
+            }
 
     memo = ResearchMemo(
         plan_id=plan.id,
@@ -563,5 +658,9 @@ async def run_plan(
         plan_id=str(plan.id),
         status=memo.status.value,
         fundamentals_status=final_state["fundamentals_status"],
+        sentiment_status=final_state["sentiment_status"],
+        risk_status=final_state["risk_status"],
+        macro_status=final_state["macro_status"],
+        comparables_status=final_state["comparables_status"],
         synthesis_status=final_state["synthesis_status"],
     )
