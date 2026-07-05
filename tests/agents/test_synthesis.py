@@ -1,22 +1,25 @@
-"""Unit tests for ``synthesis_node`` and ``_compute_memo_status`` (04-03-PLAN.md, D-02).
+"""Unit tests for ``synthesis_node`` and ``_compute_memo_status``
+(04-03-PLAN.md D-02, generalized to all 6 agents by 05-10-PLAN.md).
 
-Coverage (EXEC-02, EXEC-03):
+Coverage (EXEC-02, EXEC-03, EXEC-04, AGENT-06):
   - test_synthesis_reads_fundamentals_output: synthesis prompt/output
     references the fundamentals findings; synthesis_output contains a
     non-empty ``take`` and ``section == "synthesis"``.
-  - test_memo_status_complete: fundamentals SUCCESS + synthesis SUCCESS =>
-    memo_status == "COMPLETE".
-  - test_memo_status_partial_on_fundamentals_failed: fundamentals FAILED +
-    synthesis SUCCESS => memo_status == "PARTIAL" (EXEC-03).
-  - test_memo_status_partial_on_partial_agent: fundamentals PARTIAL +
-    synthesis SUCCESS => memo_status == "PARTIAL".
-  - test_memo_status_failed_when_both_fail: fundamentals FAILED + synthesis
-    FAILED => memo_status == "FAILED".
+  - test_memo_status_complete_all_six_success: all 5 specialists SUCCESS +
+    synthesis SUCCESS => memo_status == "COMPLETE".
+  - test_memo_status_partial_on_one_specialist_failed: one specialist FAILED,
+    the other 4 + synthesis SUCCESS => memo_status == "PARTIAL" (EXEC-04).
+  - test_memo_status_partial_on_partial_specialist: one specialist PARTIAL,
+    the other 4 + synthesis SUCCESS => memo_status == "PARTIAL".
+  - test_memo_status_failed_when_all_six_fail: all 5 specialists FAILED +
+    synthesis FAILED => memo_status == "FAILED".
   - test_synthesis_never_raises: call_groq raises => synthesis_status
     "FAILED", node returns a state update, does not propagate; memo_status
     still computed.
   - test_one_agenttask_and_one_agentoutput_persisted: exactly one AgentTask
     (agent_type "Synthesis") + one AgentOutput after a run.
+  - test_build_prompt_embeds_all_five_none_guarded: prompt embeds a
+    None-guarded block per specialist source.
 
 Mocks only at the SERVICE boundary — ``app.agents.synthesis.call_groq`` —
 never the groq SDK directly (mirrors ``tests/agents/test_fundamental_analysis.py``'s
@@ -30,6 +33,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.synthesis import _build_prompt, _compute_memo_status
 from app.db.models import (
     AgentOutput,
     AgentOutputCompleteness,
@@ -97,11 +101,37 @@ def _fundamentals_output() -> dict:
     }
 
 
+def _specialist_output(section: str, narrative: str) -> dict:
+    return {"narrative": narrative, "citations": [], "section": section}
+
+
+#: A generic non-None output for the 4 non-fundamentals specialists, used
+#: when a test only cares about status combinations, not narrative content.
+def _generic_outputs() -> dict:
+    return {
+        "sentiment_output": _specialist_output("sentiment", "Sentiment take."),
+        "risk_output": _specialist_output("risks", "Risk take."),
+        "macro_output": _specialist_output("macro", "Macro take."),
+        "comparables_output": _specialist_output(
+            "comparables", "Comparables take."
+        ),
+    }
+
+
 async def _build_state(
     db_session: AsyncSession,
     plan: ResearchPlan,
+    *,
     fundamentals_output: dict | None,
     fundamentals_status: str,
+    sentiment_output: dict | None = None,
+    sentiment_status: str = "FAILED",
+    risk_output: dict | None = None,
+    risk_status: str = "FAILED",
+    macro_output: dict | None = None,
+    macro_status: str = "FAILED",
+    comparables_output: dict | None = None,
+    comparables_status: str = "FAILED",
 ) -> dict:
     return {
         "session": db_session,
@@ -109,7 +139,100 @@ async def _build_state(
         "plan_id": str(plan.id),
         "fundamentals_output": fundamentals_output,
         "fundamentals_status": fundamentals_status,
+        "sentiment_output": sentiment_output,
+        "sentiment_status": sentiment_status,
+        "risk_output": risk_output,
+        "risk_status": risk_status,
+        "macro_output": macro_output,
+        "macro_status": macro_status,
+        "comparables_output": comparables_output,
+        "comparables_status": comparables_status,
     }
+
+
+async def _build_all_success_state(
+    db_session: AsyncSession, plan: ResearchPlan
+) -> dict:
+    """All 5 specialists SUCCESS with non-None outputs."""
+    generic = _generic_outputs()
+    return await _build_state(
+        db_session,
+        plan,
+        fundamentals_output=_fundamentals_output(),
+        fundamentals_status="SUCCESS",
+        sentiment_output=generic["sentiment_output"],
+        sentiment_status="SUCCESS",
+        risk_output=generic["risk_output"],
+        risk_status="SUCCESS",
+        macro_output=generic["macro_output"],
+        macro_status="SUCCESS",
+        comparables_output=generic["comparables_output"],
+        comparables_status="SUCCESS",
+    )
+
+
+# ---------------------------------------------------------------------------
+# _compute_memo_status unit tests (pure function, no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_memo_status_complete_all_six_success() -> None:
+    """All 5 specialist SUCCESS + synthesis SUCCESS => COMPLETE."""
+    assert (
+        _compute_memo_status(["SUCCESS"] * 5, "SUCCESS") == "COMPLETE"
+    )
+
+
+def test_compute_memo_status_failed_all_six_failed() -> None:
+    """All 5 specialist FAILED + synthesis FAILED => FAILED."""
+    assert _compute_memo_status(["FAILED"] * 5, "FAILED") == "FAILED"
+
+
+def test_compute_memo_status_partial_one_specialist_failed() -> None:
+    """One specialist FAILED, rest SUCCESS, synthesis SUCCESS => PARTIAL."""
+    statuses = ["SUCCESS", "SUCCESS", "FAILED", "SUCCESS", "SUCCESS"]
+    assert _compute_memo_status(statuses, "SUCCESS") == "PARTIAL"
+
+
+def test_compute_memo_status_partial_one_specialist_partial() -> None:
+    """One specialist PARTIAL, rest SUCCESS, synthesis SUCCESS => PARTIAL."""
+    statuses = ["SUCCESS", "PARTIAL", "SUCCESS", "SUCCESS", "SUCCESS"]
+    assert _compute_memo_status(statuses, "SUCCESS") == "PARTIAL"
+
+
+def test_compute_memo_status_partial_synthesis_failed_not_all_specialists_failed() -> (
+    None
+):
+    """Synthesis FAILED but not every specialist FAILED => PARTIAL (never FAILED)."""
+    statuses = ["SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS"]
+    assert _compute_memo_status(statuses, "FAILED") == "PARTIAL"
+
+
+# ---------------------------------------------------------------------------
+# _build_prompt None-guard coverage
+# ---------------------------------------------------------------------------
+
+
+def test_build_prompt_embeds_all_five_none_guarded() -> None:
+    """Prompt embeds a distinct block per specialist; missing ones are
+    explicitly marked unavailable rather than omitted."""
+    upstream = {
+        "fundamentals_output": _fundamentals_output(),
+        "sentiment_output": None,
+        "risk_output": _specialist_output("risks", "Risk narrative here."),
+        "macro_output": None,
+        "comparables_output": None,
+    }
+    prompt = _build_prompt("AAPL", upstream)
+
+    assert "FundamentalAnalysis findings" in prompt
+    assert "8%" in prompt
+    assert "RiskAssessment findings" in prompt
+    assert "Risk narrative here." in prompt
+    # None-guarded specialists are explicitly marked, never silently dropped.
+    assert "SentimentNLP findings: unavailable for this run." in prompt
+    assert "MacroSector findings: unavailable for this run." in prompt
+    assert "ComparableCompanies findings: unavailable for this run." in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +247,12 @@ async def test_synthesis_reads_fundamentals_output(db_session: AsyncSession) -> 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
     fundamentals_output = _fundamentals_output()
-    state = await _build_state(db_session, plan, fundamentals_output, "SUCCESS")
+    state = await _build_state(
+        db_session,
+        plan,
+        fundamentals_output=fundamentals_output,
+        fundamentals_status="SUCCESS",
+    )
 
     captured_prompt = None
 
@@ -148,19 +276,17 @@ async def test_synthesis_reads_fundamentals_output(db_session: AsyncSession) -> 
 
 
 # ---------------------------------------------------------------------------
-# Memo-status rule (D-02 ownership)
+# Memo-status rule (D-02 ownership, generalized to 6 agents)
 # ---------------------------------------------------------------------------
 
 
-async def test_memo_status_complete(db_session: AsyncSession) -> None:
-    """fundamentals SUCCESS + synthesis SUCCESS => memo_status COMPLETE."""
+async def test_memo_status_complete_all_six_success(db_session: AsyncSession) -> None:
+    """All 5 specialists SUCCESS + synthesis SUCCESS => memo_status COMPLETE."""
     from app.agents.synthesis import synthesis_node
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
-    state = await _build_state(
-        db_session, plan, _fundamentals_output(), "SUCCESS"
-    )
+    state = await _build_all_success_state(db_session, plan)
 
     with patch(
         "app.agents.synthesis.call_groq",
@@ -172,15 +298,29 @@ async def test_memo_status_complete(db_session: AsyncSession) -> None:
     assert result["memo_status"] == "COMPLETE"
 
 
-async def test_memo_status_partial_on_fundamentals_failed(
+async def test_memo_status_partial_on_one_specialist_failed(
     db_session: AsyncSession,
 ) -> None:
-    """fundamentals FAILED + synthesis SUCCESS => memo_status PARTIAL (EXEC-03)."""
+    """One specialist FAILED, rest SUCCESS, synthesis SUCCESS => PARTIAL (EXEC-04)."""
     from app.agents.synthesis import synthesis_node
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
-    state = await _build_state(db_session, plan, None, "FAILED")
+    generic = _generic_outputs()
+    state = await _build_state(
+        db_session,
+        plan,
+        fundamentals_output=None,
+        fundamentals_status="FAILED",
+        sentiment_output=generic["sentiment_output"],
+        sentiment_status="SUCCESS",
+        risk_output=generic["risk_output"],
+        risk_status="SUCCESS",
+        macro_output=generic["macro_output"],
+        macro_status="SUCCESS",
+        comparables_output=generic["comparables_output"],
+        comparables_status="SUCCESS",
+    )
 
     with patch(
         "app.agents.synthesis.call_groq",
@@ -192,14 +332,28 @@ async def test_memo_status_partial_on_fundamentals_failed(
     assert result["memo_status"] == "PARTIAL"
 
 
-async def test_memo_status_partial_on_partial_agent(db_session: AsyncSession) -> None:
-    """fundamentals PARTIAL + synthesis SUCCESS => memo_status PARTIAL."""
+async def test_memo_status_partial_on_partial_specialist(
+    db_session: AsyncSession,
+) -> None:
+    """One specialist PARTIAL, rest SUCCESS, synthesis SUCCESS => PARTIAL."""
     from app.agents.synthesis import synthesis_node
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
+    generic = _generic_outputs()
     state = await _build_state(
-        db_session, plan, _fundamentals_output(), "PARTIAL"
+        db_session,
+        plan,
+        fundamentals_output=_fundamentals_output(),
+        fundamentals_status="PARTIAL",
+        sentiment_output=generic["sentiment_output"],
+        sentiment_status="SUCCESS",
+        risk_output=generic["risk_output"],
+        risk_status="SUCCESS",
+        macro_output=generic["macro_output"],
+        macro_status="SUCCESS",
+        comparables_output=generic["comparables_output"],
+        comparables_status="SUCCESS",
     )
 
     with patch(
@@ -212,13 +366,26 @@ async def test_memo_status_partial_on_partial_agent(db_session: AsyncSession) ->
     assert result["memo_status"] == "PARTIAL"
 
 
-async def test_memo_status_failed_when_both_fail(db_session: AsyncSession) -> None:
-    """fundamentals FAILED + synthesis FAILED => memo_status FAILED."""
+async def test_memo_status_failed_when_all_six_fail(db_session: AsyncSession) -> None:
+    """All 5 specialists FAILED + synthesis FAILED => memo_status FAILED."""
     from app.agents.synthesis import synthesis_node
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
-    state = await _build_state(db_session, plan, None, "FAILED")
+    state = await _build_state(
+        db_session,
+        plan,
+        fundamentals_output=None,
+        fundamentals_status="FAILED",
+        sentiment_output=None,
+        sentiment_status="FAILED",
+        risk_output=None,
+        risk_status="FAILED",
+        macro_output=None,
+        macro_status="FAILED",
+        comparables_output=None,
+        comparables_status="FAILED",
+    )
 
     with patch(
         "app.agents.synthesis.call_groq",
@@ -241,9 +408,7 @@ async def test_synthesis_never_raises(db_session: AsyncSession) -> None:
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
-    state = await _build_state(
-        db_session, plan, _fundamentals_output(), "SUCCESS"
-    )
+    state = await _build_all_success_state(db_session, plan)
 
     with patch(
         "app.agents.synthesis.call_groq",
@@ -253,7 +418,9 @@ async def test_synthesis_never_raises(db_session: AsyncSession) -> None:
 
     assert result["synthesis_status"] == "FAILED"
     assert result["synthesis_output"] is None
-    # fundamentals SUCCESS but synthesis FAILED => PARTIAL, never masked as COMPLETE
+    # All 5 specialists SUCCESS but synthesis FAILED => PARTIAL, never masked
+    # as COMPLETE and never silently promoted to FAILED (not all-specialist
+    # FAILED).
     assert result["memo_status"] == "PARTIAL"
 
     task_row = (
@@ -279,9 +446,7 @@ async def test_one_agenttask_and_one_agentoutput_persisted(
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
-    state = await _build_state(
-        db_session, plan, _fundamentals_output(), "SUCCESS"
-    )
+    state = await _build_all_success_state(db_session, plan)
 
     with patch(
         "app.agents.synthesis.call_groq",
