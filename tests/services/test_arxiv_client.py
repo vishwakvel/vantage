@@ -60,7 +60,7 @@ def test_arxiv_client_singleton_exists() -> None:
 
 def test_arxiv_base_url() -> None:
     """ARXIV_BASE_URL targets the arXiv export API."""
-    assert ARXIV_BASE_URL == "http://export.arxiv.org"
+    assert ARXIV_BASE_URL == "https://export.arxiv.org"
 
 
 # ---------------------------------------------------------------------------

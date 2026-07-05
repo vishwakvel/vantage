@@ -20,7 +20,7 @@ import httpx
 # arXiv configuration constants
 # ---------------------------------------------------------------------------
 
-ARXIV_BASE_URL: str = "http://export.arxiv.org"
+ARXIV_BASE_URL: str = "https://export.arxiv.org"
 
 # arXiv's Atom feed namespace — must be registered to find elements by tag.
 _ATOM_NS: str = "http://www.w3.org/2005/Atom"
