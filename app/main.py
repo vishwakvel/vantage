@@ -10,6 +10,7 @@ isolation.  ``app`` is the module-level instance used by uvicorn.
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 
 def create_app() -> FastAPI:
@@ -42,6 +43,17 @@ def create_app() -> FastAPI:
             "institutional-quality investment research memos."
         ),
         lifespan=lifespan,
+    )
+
+    # ponytail: dev-only Vite origin, no deployed frontend yet (06-UI-SPEC
+    # "minimal frontend now" scope) — revisit with a configurable origin
+    # list once there's a real deployment target.
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     @application.get("/health", tags=["health"])
