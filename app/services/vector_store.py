@@ -156,15 +156,21 @@ def dense_query(
 ) -> dict[str, Any]:
     """Query ChromaDB for the nearest neighbours to query_text, scoped to user_id.
 
-    INGEST-03 enforcement: every query path MUST include where={"user_id": user_id}.
-    Public filings use user_id="" (empty string); private docs use the user's UUID
-    string.  The ChromaDB server enforces the filter; this function's job is to
-    ensure the filter is ALWAYS forwarded — no call to collection.query exists in
-    this module without it.
+    INGEST-03 enforcement: every query path MUST include a user_id-bounded
+    where filter. For a real user_id (non-empty), the filter matches that
+    user's own private chunks OR the public ("") scope — a logged-in user's
+    research run needs to see both their own uploads and public EDGAR
+    filings, never another user's private chunks. For user_id="" (an
+    explicitly public-only call), the filter stays a plain exact match — no
+    "$in" is needed since there's only one scope to search. The ChromaDB
+    server enforces whichever filter is forwarded; this function's job is to
+    ensure a filter is ALWAYS present, and that it can never expand to include
+    an id other than the caller's own or the public scope.
 
     Args:
         query_text: Free-text query to embed and search.
-        user_id:    Scope filter — "" for public-only, user UUID str for private.
+        user_id:    Scope filter — "" for public-only, user UUID str for
+                    private + public combined.
         n_results:  Number of nearest neighbours to return (default 20).
 
     Returns:
@@ -173,10 +179,15 @@ def dense_query(
     """
     collection = _get_chroma_collection()
     query_embedding = embed_texts([query_text])
+    where = (
+        {"user_id": user_id}
+        if user_id == ""
+        else {"user_id": {"$in": [user_id, ""]}}
+    )
     results = collection.query(
         query_embeddings=query_embedding,
         n_results=n_results,
-        where={"user_id": user_id},
+        where=where,
         include=["documents", "metadatas", "distances"],
     )
     return results  # type: ignore[return-value]

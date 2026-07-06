@@ -275,7 +275,7 @@ async def test_status_partial_missing_section(db_session: AsyncSession) -> None:
 
 async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
     """Zero retrieved chunks => AgentTask.status FAILED, fundamentals_output None, no exception."""
-    from app.agents.fundamental_analysis import fundamental_analysis_node
+    from app.agents.fundamental_analysis import _REASONS, fundamental_analysis_node
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
@@ -301,13 +301,22 @@ async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    # D-07: a human-readable reason sentence, never the raw section-name list
+    # (that list is reserved for the PARTIAL missing-some-sections case).
+    assert output_row.missing_fields == _REASONS["zero_chunks"]
+
 
 # ---------------------------------------------------------------------------
 
 
 async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     """call_groq raising an exception never propagates; node degrades to FAILED."""
-    from app.agents.fundamental_analysis import fundamental_analysis_node
+    from app.agents.fundamental_analysis import _REASONS, fundamental_analysis_node
 
     user = await _seed_user(db_session)
     plan = await _seed_plan(db_session, user)
@@ -334,6 +343,17 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
         )
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
+
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    # D-07: a distinct reason from the zero-chunks case — the previous bug
+    # wrote the identical section-name list for every failure path,
+    # regardless of cause.
+    assert output_row.missing_fields == _REASONS["llm_error"]
+    assert output_row.missing_fields != _REASONS["zero_chunks"]
 
 
 # ---------------------------------------------------------------------------

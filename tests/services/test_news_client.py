@@ -180,3 +180,35 @@ def test_no_groq_import() -> None:
     source = inspect.getsource(mod)
     assert "import groq" not in source
     assert "from groq" not in source
+
+
+# ---------------------------------------------------------------------------
+# reset_news_client — event-loop safety across Celery task boundaries
+# ---------------------------------------------------------------------------
+
+
+def test_reset_news_client_replaces_the_httpx_client() -> None:
+    """reset_news_client() swaps news_client's internal httpx.AsyncClient for
+    a fresh one, without replacing the news_client singleton object itself.
+
+    Each Celery task runs the async research graph under its own fresh
+    asyncio.run(...) event loop (same rationale as
+    app/db/session.py::reset_session_factory). An httpx.AsyncClient opened
+    inside a prior task's now-closed event loop raises "RuntimeError: Event
+    loop is closed" if reused inside a new loop.
+    """
+    import app.services.news_client as mod
+
+    original_singleton_id = id(mod.news_client)
+    original_client = mod.news_client._client
+
+    mod.reset_news_client()
+
+    assert id(mod.news_client) == original_singleton_id, (
+        "reset_news_client must not replace the module-level singleton object"
+    )
+    assert mod.news_client._client is not original_client, (
+        "reset_news_client must replace the underlying httpx.AsyncClient"
+    )
+    assert isinstance(mod.news_client._client, httpx.AsyncClient)
+    assert str(mod.news_client._client.base_url) == NEWS_API_BASE_URL + "/"

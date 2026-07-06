@@ -58,20 +58,21 @@ def _fake_encode(texts, *, convert_to_numpy=True, **kwargs):
 
 
 def test_user_isolation(monkeypatch):
-    """A dense_query for userB must return zero chunks whose metadata user_id is userA.
+    """A dense_query for userB must never be able to match userA's private chunks.
 
-    Setup: collection.query called with where={"user_id": "userB"}.
-    The mock returns two documents with user_id="userA" in their metadata.
-    The function MUST NOT surface those userA chunks when queried as userB — the
-    structural isolation is provided by the where filter forwarded to ChromaDB.
+    Setup: collection.query called with a userB scope. The mock returns empty
+    (ChromaDB enforces the filter server-side); the test's job is to prove the
+    filter this function forwards can only ever match userB's own chunks plus
+    the public ("") scope — userA (or any other private user) is structurally
+    excluded from the filter itself, not just "returns empty in this mock".
 
-    Because the real ChromaDB enforces the where filter server-side, the test
-    validates the function:
-      (a) always passes where={"user_id": user_id} to collection.query, and
-      (b) returns exactly what ChromaDB returns (no post-filter stripping, so
-          the server-side filter is the single enforcement point).
-    Consequence: if the where filter were OMITTED the function would return
-    userA's chunks — making this test the structural proof of isolation.
+    dense_query searches BOTH a user's private scope AND the public scope in
+    one call (so a real user's research run can see EDGAR-ingested public
+    filings alongside their own uploads) via where={"user_id": {"$in": [...]}}.
+    The isolation guarantee is: that $in list contains ONLY userB and ""
+    (public) — never another user's id. This test asserts that shape directly,
+    which is what makes it a structural proof rather than a mock-returns-empty
+    coincidence.
     """
     import app.services.vector_store as vs
 
@@ -91,10 +92,17 @@ def test_user_isolation(monkeypatch):
 
     result = vs.dense_query("revenue growth", user_id="userB", n_results=20)
 
-    # Verify where filter was forwarded to collection.query
+    # Verify where filter was forwarded to collection.query, and that its
+    # scope is EXACTLY {userB, public} -- no other user id can appear here.
     call_kwargs = mock_col.query.call_args.kwargs
-    assert call_kwargs["where"] == {"user_id": "userB"}, (
-        "dense_query must forward where={'user_id': user_id} to collection.query"
+    where = call_kwargs["where"]
+    assert where == {"user_id": {"$in": ["userB", ""]}}, (
+        "dense_query must scope to exactly [user_id, \"\"] (private + public), "
+        f"got {where!r}"
+    )
+    allowed_ids = set(where["user_id"]["$in"])
+    assert "userA" not in allowed_ids, (
+        "dense_query's filter must never include another user's private id"
     )
 
     # Result must have no documents for userB (server returns empty, no cross-user leak)

@@ -112,3 +112,26 @@ class NewsAPIClient:
 # ---------------------------------------------------------------------------
 
 news_client = NewsAPIClient()
+
+
+def reset_news_client() -> None:
+    """Replace news_client's underlying httpx.AsyncClient with a fresh one.
+
+    Each Celery task invocation (``app.workers.tasks.run_research_task``)
+    runs the async research graph under its own fresh ``asyncio.run(...)``
+    event loop (same rationale as
+    ``app/db/session.py::reset_session_factory``). An httpx.AsyncClient
+    opened inside a prior task's now-closed event loop raises "RuntimeError:
+    Event loop is closed" if reused inside a new loop. The task calls this
+    before its own ``asyncio.run`` so the client is rebuilt bound to the
+    current loop.
+
+    Unlike ``reset_session_factory``, this client is constructed eagerly at
+    import time (not lazily), so there is no "drop the reference and let it
+    rebuild on next use" shortcut — the replacement client is constructed
+    here, directly.
+    """
+    news_client._client = httpx.AsyncClient(
+        timeout=30.0,
+        base_url=NEWS_API_BASE_URL,
+    )

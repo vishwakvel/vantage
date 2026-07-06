@@ -34,6 +34,7 @@ Memo-status rule (D-02, generalized to 6 agents by 05-10-PLAN.md):
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.db.models import (
@@ -46,6 +47,8 @@ from app.db.models import (
 from app.ingestion.section_constants import SECTION_SYNTHESIS
 from app.services.groq_client import call_groq
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Module constants
 # ---------------------------------------------------------------------------
@@ -53,6 +56,14 @@ from app.services.groq_client import call_groq
 #: Bounded token budget passed to call_groq — bounds spend against the
 #: shared rate limiter (T-04-DOS-LLM mitigation).
 _MAX_TOKENS: int = 1024
+
+#: D-07 controlled vocabulary — short, user-facing failure-reason sentence
+#: rendered inline in the memo's Synthesis section, never a raw technical
+#: status string or (as the exception path previously hardcoded) the name of
+#: a local variable.
+_REASONS: dict[str, str] = {
+    "llm_error": "Synthesis unavailable — analysis engine error",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +242,13 @@ async def synthesis_node(state: dict[str, Any]) -> dict[str, Any]:
         await session.commit()
         synthesis_status = task.status.value
     except Exception:  # noqa: BLE001 — never let a node exception escape (D-04)
+        logger.exception("Synthesis node failed for ticker=%s", ticker)
         task.status = AgentTaskStatus.FAILED
         session.add(
             AgentOutput(
                 task_id=task.id,
                 completeness=AgentOutputCompleteness.PARTIAL,
-                missing_fields=["take"],
+                missing_fields=[_REASONS["llm_error"]],
                 output=_fallback_output(),
             )
         )

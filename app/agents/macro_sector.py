@@ -36,6 +36,7 @@ Failure-reason vocabulary (D-07, EXEC-04): on any degraded path,
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.db.models import (
@@ -48,6 +49,8 @@ from app.db.session import session_scope
 from app.ingestion.section_constants import SECTION_MACRO
 from app.services.fred_client import MACRO_SERIES, fred_client
 from app.services.groq_client import call_groq
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module constants
@@ -166,6 +169,11 @@ async def macro_sector_node(state: dict[str, Any]) -> dict[str, Any]:
                         series_id, limit=_SERIES_LIMIT
                     )
                 except Exception:  # noqa: BLE001 — isolate one bad series
+                    logger.exception(
+                        "MacroSector series fetch failed for label=%s series_id=%s",
+                        label,
+                        series_id,
+                    )
                     observations = []
 
                 if observations:
@@ -226,6 +234,7 @@ async def macro_sector_node(state: dict[str, Any]) -> dict[str, Any]:
                 "macro_status": task.status.value,
             }
         except Exception:  # noqa: BLE001 — never let a node exception escape (D-04)
+            logger.exception("MacroSector node failed for ticker=%s", ticker)
             task.status = AgentTaskStatus.FAILED
             session.add(
                 AgentOutput(

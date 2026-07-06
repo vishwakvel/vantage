@@ -140,6 +140,42 @@ async def test_async_context_manager_closes_on_exit() -> None:
 
 
 # ---------------------------------------------------------------------------
+# reset_edgar_client — event-loop safety across Celery task boundaries
+# ---------------------------------------------------------------------------
+
+
+def test_reset_edgar_client_replaces_both_httpx_clients() -> None:
+    """reset_edgar_client() swaps BOTH of edgar_client's internal
+    httpx.AsyncClient instances (_client for EFTS search, _archive_client for
+    SEC Archives) for fresh ones, without replacing the edgar_client
+    singleton object itself.
+
+    Each Celery task runs the async research graph under its own fresh
+    asyncio.run(...) event loop (same rationale as
+    app/db/session.py::reset_session_factory). An httpx.AsyncClient opened
+    inside a prior task's now-closed event loop raises "RuntimeError: Event
+    loop is closed" if reused inside a new loop -- and EDGARClient has TWO
+    such clients, both need replacing.
+    """
+    import app.services.edgar_client as mod
+
+    original_singleton_id = id(mod.edgar_client)
+    original_client = mod.edgar_client._client
+    original_archive_client = mod.edgar_client._archive_client
+
+    mod.reset_edgar_client()
+
+    assert id(mod.edgar_client) == original_singleton_id, (
+        "reset_edgar_client must not replace the module-level singleton object"
+    )
+    assert mod.edgar_client._client is not original_client
+    assert mod.edgar_client._archive_client is not original_archive_client
+    assert isinstance(mod.edgar_client._client, httpx.AsyncClient)
+    assert isinstance(mod.edgar_client._archive_client, httpx.AsyncClient)
+    assert str(mod.edgar_client._client.base_url) == EDGAR_BASE_URL
+
+
+# ---------------------------------------------------------------------------
 # section_constants: all public constants are non-empty strings
 # ---------------------------------------------------------------------------
 

@@ -102,3 +102,29 @@ class EDGARClient:
 # ---------------------------------------------------------------------------
 
 edgar_client: EDGARClient = EDGARClient()
+
+
+def reset_edgar_client() -> None:
+    """Replace BOTH of edgar_client's underlying httpx.AsyncClient instances
+    with fresh ones.
+
+    Each Celery task invocation (``app.workers.tasks.run_research_task``)
+    runs the async research graph under its own fresh ``asyncio.run(...)``
+    event loop (same rationale as
+    ``app/db/session.py::reset_session_factory``). An httpx.AsyncClient
+    opened inside a prior task's now-closed event loop raises "RuntimeError:
+    Event loop is closed" if reused inside a new loop. The task calls this
+    before its own ``asyncio.run`` so both clients are rebuilt bound to the
+    current loop. EDGARClient maintains two independent clients (EFTS search
+    and SEC Archives) — both must be replaced.
+    """
+    edgar_client._client = httpx.AsyncClient(
+        headers={"User-Agent": EDGAR_USER_AGENT},
+        timeout=30.0,
+        base_url=EDGAR_BASE_URL,
+    )
+    edgar_client._archive_client = httpx.AsyncClient(
+        headers={"User-Agent": EDGAR_USER_AGENT},
+        timeout=30.0,
+        base_url=EDGAR_ARCHIVES_URL,
+    )

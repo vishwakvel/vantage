@@ -7,14 +7,20 @@ Endpoints:
 - POST /research/{plan_id}/documents → 200 ResearchDocumentResponse (private
   PDF attached to an owned plan) or 404 (plan not found/not owned) or 413
   (oversized upload)
-- POST /research/{plan_id}/run → 200 RunResponse (runs the compiled
-  FundamentalAnalysis -> Synthesis graph, persists a ResearchMemo, returns
-  per-agent statuses + memo status) or 404 (plan not found/not owned)
+- POST /research/{plan_id}/run → 200 RunAsyncResponse (creates a PENDING
+  ResearchMemo, dispatches ``run_research_task`` to Celery, and returns
+  immediately — EXEC-05) or 404 (plan not found/not owned)
+- GET /research/memo/{memo_id} → 200 MemoResponse (fetch a memo by id,
+  owner-only) or 404 (not found/not owned)
+- GET /research/{plan_id}/memo → 200 MemoResponse (fetch the latest memo for
+  an owned plan) or 404 (plan not found/not owned, or no memo yet)
 
 Mounted under /api/v1 by the v1 aggregator, yielding:
   /api/v1/research
   /api/v1/research/{plan_id}/documents
   /api/v1/research/{plan_id}/run
+  /api/v1/research/memo/{memo_id}
+  /api/v1/research/{plan_id}/memo
 
 Implements REQST-01 (free-text intake), REQST-02 (auto-resolve >= 0.85
 without prompting), REQST-03 (strict clarification gate — no plan/memo until
@@ -22,12 +28,13 @@ every ticker resolves), REQST-04 (resubmitting with ``selected_tickers``
 resolves straight to a plan), REQST-05 (multi-ticker requests — up to 2
 tickers per query, all-or-nothing gating, >2 rejected with 400), REQST-06
 (private PDF attachment to an owned research plan), per 03-CONTEXT.md D-01
-through D-07, and EXEC-02/EXEC-03/MEMO-01 (running the 2-agent graph and
-persisting a structured, cited, status-tracked ResearchMemo), per
-04-CONTEXT.md.
+through D-07, and EXEC-05 (async dispatch: ``/run`` returns immediately
+after creating a PENDING memo and dispatching the background Celery task —
+the graph invocation itself lives in ``app.workers.tasks.run_research_task``,
+per 06-CONTEXT.md D-01/D-02/D-03/D-04).
 
 Security boundaries (STRIDE T-03-01, T-03-02, T-03-03, T-03-04, T-03-05,
-T-03-06, T-04-IDOR, T-04-AUTHZ, T-04-5XX, T-04-INPUT):
+T-03-06, T-06-07-IDOR, T-06-07-AUTHZ, T-06-07-DISPATCH):
 - T-03-04: /research derives the user ONLY from get_current_user; never from
   any request body field. An unauthenticated request returns 401/403 before
   any resolve/ingest work happens.
@@ -49,21 +56,21 @@ T-03-06, T-04-IDOR, T-04-AUTHZ, T-04-5XX, T-04-INPUT):
 - T-03-05 (elevation of privilege): user_id passed to ``ingestion_service.
   ingest_pdf`` is sourced EXCLUSIVELY from the authenticated principal —
   there is no user_id form field on the document-attach endpoint.
-- T-04-IDOR (elevation of privilege): POST /research/{plan_id}/run uses the
-  identical ownership pattern as ``attach_document`` — ``ResearchPlan.id ==
-  plan_id AND ResearchPlan.user_id == user.id``; a non-owned or missing
-  plan_id returns 404 in both cases, never 403.
-- T-04-AUTHZ (spoofing): user identity for ``/run`` is sourced only from
-  ``get_current_user`` (JWT) — never from the path or body; unauthenticated
-  requests are rejected before any graph work.
-- T-04-5XX (DoS): the graph's node functions never raise (established in
-  04-02/04-03-PLAN.md) — ``/run`` adds no swallowing try/except around
-  ``ainvoke`` that would mask a genuine bug; it simply persists whatever
-  status the graph's own caught-exception handling already produced, so
-  agent failure yields a PARTIAL memo, not a 500.
-- T-04-INPUT (tampering): ``plan_id`` is validated via the ownership query
-  (must exist and be owned); the ticker passed into the graph is derived
-  from ``plan.resolved_tickers``, never from client input.
+- T-06-07-IDOR (elevation of privilege / IDOR): POST /research/{plan_id}/run
+  uses the identical ownership pattern as ``attach_document`` —
+  ``ResearchPlan.id == plan_id AND ResearchPlan.user_id == user.id``. Both
+  GET memo routes are scoped the same way: ``/memo/{memo_id}`` via
+  ``ResearchMemo.user_id == user.id`` directly, ``/{plan_id}/memo`` via
+  ``ResearchPlan`` ownership. A non-owned or missing id returns 404 in every
+  case, never 403 (no existence leak).
+- T-06-07-AUTHZ (spoofing): user identity for ``/run`` and both GET memo
+  routes is sourced only from ``get_current_user`` (JWT) — never from the
+  path or body; unauthenticated requests are rejected (401) before any DB
+  work.
+- T-06-07-DISPATCH (tampering): the ``memo_id``/``plan_id``/``ticker``/
+  ``user_id`` arguments passed to ``run_research_task.delay(...)`` are
+  derived exclusively from the ownership-verified plan and the authenticated
+  user — never from the request body.
 """
 
 from __future__ import annotations
@@ -79,8 +86,6 @@ import app.services.ingestion_service as ingestion_service
 import app.services.ticker_resolver as ticker_resolver
 from app.core.dependencies import get_current_user, get_session
 from app.db.models import (
-    AgentOutput,
-    AgentTask,
     ResearchMemo,
     ResearchMemoStatus,
     ResearchPlan,
@@ -88,15 +93,7 @@ from app.db.models import (
     ResearchRequest,
     User,
 )
-from app.graph.research_graph import build_research_graph
-from app.ingestion.section_constants import (
-    SECTION_COMPARABLES,
-    SECTION_FUNDAMENTALS,
-    SECTION_MACRO,
-    SECTION_RISKS,
-    SECTION_SENTIMENT,
-    SECTION_SYNTHESIS,
-)
+from app.workers.tasks import run_research_task
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -117,49 +114,6 @@ _TICKER_RE: re.Pattern[str] = re.compile(r"^[A-Z0-9]{1,10}$")
 #: Mirrors ingest.py's _PDF_ENDPOINT_MAX_BYTES — enforced before the full
 #: body is buffered in memory (T-03-03 DoS mitigation, CR-03).
 _RESEARCH_DOC_MAX_BYTES: int = 50 * 1024 * 1024  # 50 MB
-
-#: Maps each memo section constant to its AgentTask.agent_type string —
-#: used to source a failed/missing section's user-facing reason from that
-#: agent's persisted AgentOutput.missing_fields (EXEC-04).
-_AGENT_TYPE_BY_SECTION: dict[str, str] = {
-    SECTION_FUNDAMENTALS: "FundamentalAnalysis",
-    SECTION_SENTIMENT: "SentimentNLP",
-    SECTION_RISKS: "RiskAssessment",
-    SECTION_MACRO: "MacroSector",
-    SECTION_COMPARABLES: "ComparableCompanies",
-    SECTION_SYNTHESIS: "Synthesis",
-}
-
-#: Maps each memo section constant to its (output, status) AgentGraphState
-#: field names — drives the full-section memo body assembly (EXEC-04: every
-#: dispatched agent's section is present in the memo body, never omitted).
-_SECTION_STATE_FIELDS: dict[str, tuple[str, str]] = {
-    SECTION_FUNDAMENTALS: ("fundamentals_output", "fundamentals_status"),
-    SECTION_SENTIMENT: ("sentiment_output", "sentiment_status"),
-    SECTION_RISKS: ("risk_output", "risk_status"),
-    SECTION_MACRO: ("macro_output", "macro_status"),
-    SECTION_COMPARABLES: ("comparables_output", "comparables_status"),
-    SECTION_SYNTHESIS: ("synthesis_output", "synthesis_status"),
-}
-
-
-def _extract_reason(missing_fields: object) -> str | None:
-    """Normalize an ``AgentOutput.missing_fields`` JSON value into a single
-    user-facing reason string.
-
-    ``missing_fields`` shapes vary across the 6 agents introduced across
-    Phase 4/5 (a plain D-07 sentence string, a single-item list wrapping a
-    D-07 sentence, or FundamentalAnalysis/Synthesis's older raw
-    section/field-name list) — this normalizes any of those into one
-    string, or ``None`` when there is nothing to report (SUCCESS/FULL).
-    """
-    if missing_fields is None:
-        return None
-    if isinstance(missing_fields, str):
-        return missing_fields
-    if isinstance(missing_fields, list):
-        return "; ".join(str(item) for item in missing_fields) or None
-    return str(missing_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -270,18 +224,31 @@ class ResearchDocumentResponse(BaseModel):
     source_warnings: list[str]
 
 
-class RunResponse(BaseModel):
-    """Returned by POST /research/{plan_id}/run (EXEC-02, MEMO-01, AGENT-05/06)."""
+class RunAsyncResponse(BaseModel):
+    """Returned by POST /research/{plan_id}/run (EXEC-05, D-02/D-03).
+
+    Slim by design — no per-agent status fields and no Celery task_id (D-03):
+    the client subscribes to progress via the memo_id (WebSocket, 06-04) and
+    later fetches the completed memo via the GET routes below (D-04).
+    """
 
     memo_id: str
     plan_id: str
     status: str
-    fundamentals_status: str
-    sentiment_status: str
-    risk_status: str
-    macro_status: str
-    comparables_status: str
-    synthesis_status: str
+
+
+class MemoResponse(BaseModel):
+    """Returned by both GET memo routes (D-04).
+
+    The memo is returned as raw structured JSON — the frontend renders it
+    unformatted this phase per 06-UI-SPEC.md.
+    """
+
+    memo_id: str
+    plan_id: str
+    status: str
+    ticker: str | None
+    body: dict | None
 
 
 # ---------------------------------------------------------------------------
@@ -524,28 +491,31 @@ async def attach_document(
     )
 
 
-@router.post("/{plan_id}/run", response_model=RunResponse)
+@router.post("/{plan_id}/run", response_model=RunAsyncResponse)
 async def run_plan(
     plan_id: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> RunResponse:
-    """Run the compiled FundamentalAnalysis -> Synthesis graph for an owned plan.
+) -> RunAsyncResponse:
+    """Dispatch async research execution for an owned plan (EXEC-05).
 
-    Authentication is REQUIRED (T-04-AUTHZ) — an unauthenticated request
+    Authentication is REQUIRED (T-06-07-AUTHZ) — an unauthenticated request
     never reaches the handler body (401/403).
 
     Ownership is checked against ``ResearchPlan.user_id == user.id``
-    (T-04-IDOR, OWASP A01) — a ``plan_id`` that does not exist OR does not
+    (T-06-07-IDOR, OWASP A01) — a ``plan_id`` that does not exist OR does not
     belong to the authenticated user returns 404 in both cases, never 403.
 
-    Builds the initial graph state from the owned plan (ticker sourced
-    exclusively from ``plan.resolved_tickers``, never client input —
-    T-04-INPUT) and invokes ``build_research_graph().ainvoke``. The node
-    functions never raise (04-02/04-03-PLAN.md), so no additional
-    try/except is added here that could mask a genuine bug (T-04-5XX) — the
-    already-caught agent statuses flow straight through to the persisted
-    memo.
+    Creates a PENDING ``ResearchMemo`` row synchronously (D-02) so
+    ``memo_id`` is available in the response immediately — a WebSocket
+    client can subscribe to progress before the background task starts.
+    Dispatches ``run_research_task.delay(...)`` (T-06-07-DISPATCH: args are
+    sourced exclusively from the ownership-verified plan and the
+    authenticated user, never from the request body) and returns without
+    waiting for the graph to run. The graph invocation, EXEC-04
+    reason-lookup, and memo-body assembly now live entirely in
+    ``app.workers.tasks.run_research_task`` (06-03) — this endpoint no
+    longer blocks on any of that work.
 
     Re-running a plan that already has a memo (D-03): the prior latest
     ``ResearchMemo`` for this plan (by ``created_at`` desc) becomes the new
@@ -553,13 +523,13 @@ async def run_plan(
 
     Args:
         plan_id: ResearchPlan UUID from the URL path.
-        user:    Authenticated user resolved from the Bearer JWT (T-04-AUTHZ);
-                 the ONLY source of user identity.
+        user:    Authenticated user resolved from the Bearer JWT
+                 (T-06-07-AUTHZ); the ONLY source of user identity.
         session: Injected async DB session.
 
     Returns:
-        ``RunResponse`` with the new memo's id/status and each agent's
-        status.
+        ``RunAsyncResponse`` with the new memo's id/plan_id/status
+        (PENDING) — no per-agent fields, no Celery task_id (D-03).
 
     Raises:
         HTTPException: 404 if the plan does not exist or is not owned by
@@ -584,83 +554,130 @@ async def run_plan(
     )
     parent = parent_result.scalars().first()
 
-    initial_state = {
-        "plan_id": str(plan.id),
-        "ticker": ticker,
-        "user_id": str(user.id),
-        "session": session,
-        "fundamentals_output": None,
-        "fundamentals_status": "",
-        "sentiment_output": None,
-        "sentiment_status": "",
-        "risk_output": None,
-        "risk_status": "",
-        "macro_output": None,
-        "macro_status": "",
-        "comparables_output": None,
-        "comparables_status": "",
-        "synthesis_output": None,
-        "synthesis_status": "",
-        "memo_status": "",
-    }
-    final_state = await build_research_graph().ainvoke(initial_state)
-
-    # EXEC-04: assemble the memo body across EVERY dispatched agent's
-    # section — a section is never dropped even when its agent failed. A
-    # present output (SUCCESS or a degraded-but-non-empty PARTIAL) is stored
-    # as-is; a None output (FAILED) is replaced with an explicit marker
-    # carrying a user-facing reason sourced from that agent's persisted
-    # AgentOutput.missing_fields, never silently omitted.
-    reason_result = await session.execute(
-        select(AgentTask.agent_type, AgentTask.created_at, AgentOutput.missing_fields)
-        .join(AgentOutput, AgentOutput.task_id == AgentTask.id)
-        .where(
-            AgentTask.plan_id == plan.id,
-            AgentTask.agent_type.in_(_AGENT_TYPE_BY_SECTION.values()),
-        )
-        .order_by(AgentTask.created_at.desc())
-    )
-    reasons_by_agent_type: dict[str, str | None] = {}
-    for agent_type, _created_at, missing_fields in reason_result.all():
-        # Latest AgentTask per agent_type wins — a plan may have prior runs'
-        # rows too (D-03 rerun lineage), and created_at desc surfaces this
-        # run's row first.
-        if agent_type not in reasons_by_agent_type:
-            reasons_by_agent_type[agent_type] = _extract_reason(missing_fields)
-
-    body: dict[str, Any] = {}
-    for section, (output_field, status_field) in _SECTION_STATE_FIELDS.items():
-        output = final_state.get(output_field)
-        if output is not None:
-            body[section] = output
-        else:
-            agent_type = _AGENT_TYPE_BY_SECTION[section]
-            body[section] = {
-                "narrative": None,
-                "status": final_state.get(status_field),
-                "reason": reasons_by_agent_type.get(agent_type),
-            }
-
     memo = ResearchMemo(
         plan_id=plan.id,
         user_id=user.id,
         ticker=ticker or None,
-        status=ResearchMemoStatus(final_state["memo_status"]),
-        body=body,
+        status=ResearchMemoStatus.PENDING,
+        body={},
         parent_memo_id=parent.id if parent else None,
     )
     session.add(memo)
     await session.commit()
     await session.refresh(memo)
 
-    return RunResponse(
+    run_research_task.delay(
+        memo_id=str(memo.id),
+        plan_id=str(plan.id),
+        ticker=ticker,
+        user_id=str(user.id),
+    )
+
+    return RunAsyncResponse(
         memo_id=str(memo.id),
         plan_id=str(plan.id),
         status=memo.status.value,
-        fundamentals_status=final_state["fundamentals_status"],
-        sentiment_status=final_state["sentiment_status"],
-        risk_status=final_state["risk_status"],
-        macro_status=final_state["macro_status"],
-        comparables_status=final_state["comparables_status"],
-        synthesis_status=final_state["synthesis_status"],
+    )
+
+
+@router.get("/memo/{memo_id}", response_model=MemoResponse)
+async def get_memo(
+    memo_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> MemoResponse:
+    """Fetch a memo by id, owner-only (D-04).
+
+    Authentication is REQUIRED — an unauthenticated request never reaches
+    the handler body (401/403).
+
+    Ownership is checked directly against ``ResearchMemo.user_id ==
+    user.id`` (T-06-07-IDOR) — a non-owned or non-existent ``memo_id``
+    returns 404 in both cases, never 403 (no existence leak).
+
+    Args:
+        memo_id: ResearchMemo UUID from the URL path.
+        user:    Authenticated user resolved from the Bearer JWT
+                 (T-06-07-AUTHZ); the ONLY source of user identity.
+        session: Injected async DB session.
+
+    Returns:
+        ``MemoResponse`` with the memo's id/plan_id/status/ticker/body.
+
+    Raises:
+        HTTPException: 404 if the memo does not exist or is not owned by
+                        ``user``.
+    """
+    result = await session.execute(
+        select(ResearchMemo).where(
+            ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id
+        )
+    )
+    memo = result.scalar_one_or_none()
+    if memo is None:
+        raise HTTPException(status_code=404, detail="Memo not found")
+
+    return MemoResponse(
+        memo_id=str(memo.id),
+        plan_id=str(memo.plan_id),
+        status=memo.status.value,
+        ticker=memo.ticker,
+        body=memo.body,
+    )
+
+
+@router.get("/{plan_id}/memo", response_model=MemoResponse)
+async def get_latest_memo_for_plan(
+    plan_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> MemoResponse:
+    """Fetch the latest memo for an owned plan (D-04).
+
+    Authentication is REQUIRED — an unauthenticated request never reaches
+    the handler body (401/403).
+
+    Ownership is checked against ``ResearchPlan.user_id == user.id``
+    (T-06-07-IDOR, mirrors ``attach_document``/``run_plan``) — a non-owned
+    or non-existent ``plan_id`` returns 404 in both cases, never 403. If the
+    plan exists but has no memo yet (e.g. the background task hasn't
+    finished, or hasn't started), that is also a 404.
+
+    Args:
+        plan_id: ResearchPlan UUID from the URL path.
+        user:    Authenticated user resolved from the Bearer JWT
+                 (T-06-07-AUTHZ); the ONLY source of user identity.
+        session: Injected async DB session.
+
+    Returns:
+        ``MemoResponse`` for the newest memo on this plan (by ``created_at``).
+
+    Raises:
+        HTTPException: 404 if the plan does not exist, is not owned by
+                        ``user``, or has no memo yet.
+    """
+    plan_result = await session.execute(
+        select(ResearchPlan).where(
+            ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id
+        )
+    )
+    plan = plan_result.scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Research plan not found")
+
+    memo_result = await session.execute(
+        select(ResearchMemo)
+        .where(ResearchMemo.plan_id == plan.id)
+        .order_by(ResearchMemo.created_at.desc())
+    )
+    memo = memo_result.scalars().first()
+    if memo is None:
+        raise HTTPException(status_code=404, detail="No memo for plan")
+
+    return MemoResponse(
+        memo_id=str(memo.id),
+        plan_id=str(memo.plan_id),
+        status=memo.status.value,
+        ticker=memo.ticker,
+        body=memo.body,
     )

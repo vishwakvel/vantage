@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: vantage
       POSTGRES_DB: vantage
     ports:
-      - "5432:5432"
+      - "5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vantage"]
       interval: 5s
@@ -57,3 +57,20 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://vantage:vantage@postgres:5432/vantage
+      REDIS_URL: redis://redis:6379/0
+      CHROMADB_HOST: chromadb
+      CHROMADB_PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=info

@@ -224,3 +224,27 @@ async def test_call_groq_invokes_sdk_with_expected_args(
         model="llama-3.3-70b-versatile",
         max_tokens=256,
     )
+
+
+# ---------------------------------------------------------------------------
+# reset_groq_client — event-loop safety across Celery task boundaries
+# ---------------------------------------------------------------------------
+
+
+def test_reset_groq_client_drops_the_cached_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reset_groq_client() drops the lazy module-level AsyncGroq singleton so
+    the next call_groq() rebuilds it bound to the current event loop.
+
+    Mirrors app/db/session.py::reset_session_factory exactly: each Celery
+    task runs the async research graph under its own fresh asyncio.run(...)
+    event loop, and an AsyncGroq client (which wraps an httpx.AsyncClient
+    internally) created inside a prior task's now-closed loop cannot be
+    safely reused inside a new one.
+    """
+    sentinel = object()
+    monkeypatch.setattr(groq_client_module, "_client", sentinel, raising=False)
+    assert groq_client_module._client is sentinel
+
+    groq_client_module.reset_groq_client()
+
+    assert groq_client_module._client is None
