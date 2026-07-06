@@ -49,6 +49,31 @@ def _get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
+def reset_session_factory() -> None:
+    """Drop the lazy ``_engine``/``_session_factory`` singletons.
+
+    Each Celery task invocation (``app.workers.tasks.run_research_task``)
+    runs the async research graph under its own fresh ``asyncio.run(...)``
+    event loop. An async engine created inside a prior task's (now-closed)
+    event loop cannot be reused inside a new loop — asyncpg connections are
+    bound to the loop that opened them. The task calls this function before
+    its own ``asyncio.run`` so the next ``session_scope()``/
+    ``_get_session_factory()`` call rebuilds the engine bound to the
+    current loop.
+
+    It is safe to simply drop the reference rather than calling
+    ``engine.dispose()``: the prior loop's connections were already released
+    when that loop closed, so there is nothing left to explicitly dispose
+    against a (now-closed) loop.
+
+    Does not affect ``get_session``/``session_scope`` behavior beyond
+    causing the next call to lazily rebuild the engine/factory.
+    """
+    global _engine, _session_factory  # noqa: PLW0603
+    _engine = None
+    _session_factory = None
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency that yields a scoped ``AsyncSession``.
 
