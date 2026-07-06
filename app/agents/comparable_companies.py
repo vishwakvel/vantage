@@ -36,6 +36,7 @@ Coverage rule (05-08-PLAN.md, locked decision):
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.db.models import (
@@ -48,6 +49,8 @@ from app.db.session import session_scope
 from app.ingestion.section_constants import SECTION_COMPARABLES
 from app.services.comparables_source import comparables_source
 from app.services.groq_client import call_groq
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module constants
@@ -218,6 +221,7 @@ async def comparable_companies_node(state: dict[str, Any]) -> dict[str, Any]:
                 "comparables_status": task.status.value,
             }
         except Exception:  # noqa: BLE001 — never let a node exception escape (EXEC-03)
+            logger.exception("ComparableCompanies node failed for ticker=%s", ticker)
             task.status = AgentTaskStatus.FAILED
             session.add(
                 AgentOutput(

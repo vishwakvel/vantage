@@ -28,6 +28,7 @@ Coverage rule (05-05-PLAN.md, locked decision):
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.db.models import (
@@ -41,6 +42,8 @@ from app.ingestion.section_constants import SECTION_SENTIMENT
 from app.services.arxiv_client import arxiv_client
 from app.services.groq_client import call_groq
 from app.services.news_client import news_client
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module constants
@@ -254,6 +257,7 @@ async def sentiment_nlp_node(state: dict[str, Any]) -> dict[str, Any]:
                 "sentiment_status": task.status.value,
             }
         except Exception:  # noqa: BLE001 — never let a node exception escape (D-04)
+            logger.exception("SentimentNLP node failed for ticker=%s", ticker)
             task.status = AgentTaskStatus.FAILED
             session.add(
                 AgentOutput(

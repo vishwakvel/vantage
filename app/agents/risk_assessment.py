@@ -39,6 +39,7 @@ Coverage rule (D-03, this plan's locked decision):
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.db.models import (
@@ -52,6 +53,8 @@ from app.ingestion.retriever import hybrid_retrieve
 from app.ingestion.section_constants import SECTION_RISK_FACTORS, SECTION_RISKS
 from app.services.groq_client import call_groq
 from app.services.news_client import news_client
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module constants
@@ -239,6 +242,7 @@ async def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
                 "risk_status": task.status.value,
             }
         except Exception:  # noqa: BLE001 — never let a node exception escape (D-04)
+            logger.exception("RiskAssessment node failed for ticker=%s", ticker)
             task.status = AgentTaskStatus.FAILED
             session.add(
                 AgentOutput(

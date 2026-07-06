@@ -432,6 +432,17 @@ async def test_synthesis_never_raises(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    # D-07: a human-readable reason sentence -- NOT the literal string "take"
+    # (the local variable name holding the LLM's output), which is what the
+    # exception path previously hardcoded regardless of what actually failed.
+    assert output_row.missing_fields != ["take"]
+    assert "take" not in output_row.missing_fields
+
 
 # ---------------------------------------------------------------------------
 # Persistence cardinality
