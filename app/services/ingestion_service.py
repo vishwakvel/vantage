@@ -462,7 +462,12 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
         search_resp = await edgar_client.get(
             "/LATEST/search-index",
             params={
-                "entityName": ticker,
+                # "q" is EFTS's full-text query param — "entityName" isn't a
+                # recognized param and made EDGAR 500. Quoting the ticker
+                # keeps this an exact-phrase match (bare "q=AAPL" is a plain
+                # full-text search and pulls in unrelated companies whose
+                # filings merely mention the string "AAPL").
+                "q": f'"{ticker}"',
                 "forms": "10-K,10-Q",
                 "dateRange": "custom",
                 "startdt": three_years_ago,
