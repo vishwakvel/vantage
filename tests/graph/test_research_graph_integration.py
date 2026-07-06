@@ -12,7 +12,8 @@ graph to prove:
   - EXEC-04: one specialist's source returning empty (comparables
     ``get_peers`` -> ``[]``) while the other 4 succeed yields that agent
     FAILED, ``memo_status`` PARTIAL, and — replicating the exact
-    section-assembly logic ``app.api.v1.research.run_plan`` uses — the
+    section-assembly logic ``app.workers.tasks._run_research_async`` uses
+    (moved from ``app.api.v1.research.run_plan`` in 06-05) — the
     comparables section's key is never omitted and carries a non-null
     user-facing reason sourced from ``AgentOutput.missing_fields``.
 
@@ -35,14 +36,14 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.research import (
+from app.db.models import AgentOutput, AgentTask, ResearchPlan, ResearchRequest, User
+from app.graph.research_graph import build_research_graph
+from app.ingestion.section_constants import SECTION_COMPARABLES
+from app.workers.tasks import (
     _AGENT_TYPE_BY_SECTION,
     _SECTION_STATE_FIELDS,
     _extract_reason,
 )
-from app.db.models import AgentOutput, AgentTask, ResearchPlan, ResearchRequest, User
-from app.graph.research_graph import build_research_graph
-from app.ingestion.section_constants import SECTION_COMPARABLES
 from tests.api.test_run_api import (  # noqa: F401 — fixture imported for autouse
     _patch_all_agents,
     _session_scope_targets_test_db,
@@ -123,10 +124,11 @@ def _build_initial_state(db_session: AsyncSession, plan: ResearchPlan, user: Use
 
 
 async def _assemble_memo_body(db_session: AsyncSession, plan: ResearchPlan, final_state: dict) -> dict:
-    """Replicates app.api.v1.research.run_plan's memo body assembly exactly,
-    so this graph-level integration test can assert on the SAME EXEC-04
-    section-never-omitted / reason-sourcing behavior the endpoint persists,
-    without going through the HTTP layer.
+    """Replicates app.workers.tasks._run_research_async's memo body assembly
+    exactly (moved there from app.api.v1.research.run_plan in 06-05), so
+    this graph-level integration test can assert on the SAME EXEC-04
+    section-never-omitted / reason-sourcing behavior the background task
+    persists, without going through Celery.
     """
     reason_result = await db_session.execute(
         select(AgentTask.agent_type, AgentTask.created_at, AgentOutput.missing_fields)

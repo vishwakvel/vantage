@@ -1,49 +1,36 @@
-"""End-to-end tests for POST /api/v1/research/{plan_id}/run.
+"""Tests for POST /api/v1/research/{plan_id}/run (EXEC-05, 06-05-PLAN.md).
 
-Coverage (05-10-PLAN.md, generalizing 04-05-PLAN.md's 2-agent tests to the
-full 5-way parallel fan-out; EXEC-02, EXEC-04, MEMO-01, D-03, T-04-IDOR,
-AGENT-05, AGENT-06):
-  - test_run_happy_path_has_named_sections: full coverage across all 5
-    specialists yields a persisted ResearchMemo with a named section for
-    every one of the 5 specialists plus synthesis (MEMO-01).
-  - test_run_reports_per_agent_statuses: response body reports every one of
-    the 6 agents' statuses among SUCCESS/PARTIAL/FAILED plus the overall
-    memo status (EXEC-02).
-  - test_run_partial_on_fundamentals_failure: zero retrieved chunks ->
-    200 (no 5xx), persisted ResearchMemo.status == "PARTIAL",
-    fundamentals agent status == "FAILED" (EXEC-03, SC#5).
-  - test_run_partial_on_one_specialist_failure: one specialist's source
-    returns empty (comparables get_peers -> []) while the other 4 succeed ->
-    200, memo PARTIAL, comparables section carries a non-null reason
-    sourced from AgentOutput.missing_fields (EXEC-04).
+``run_plan`` no longer runs the research graph synchronously — it creates a
+PENDING ``ResearchMemo`` row, dispatches ``run_research_task.delay(...)``,
+and returns immediately (D-01/D-02/D-03). Coverage:
+  - test_run_creates_pending_memo_and_dispatches_task: mocks
+    ``run_research_task.delay``; asserts 200 with body
+    ``{memo_id, plan_id, status: "PENDING"}`` (no per-agent fields, no
+    task_id — D-03), exactly one ``ResearchMemo`` row is created with
+    status PENDING and an empty body, and ``.delay`` was called exactly
+    once with the created memo's id/plan_id/ticker/user_id.
   - test_run_other_user_plan_returns_404 / test_run_missing_plan_returns_404:
-    IDOR — non-owned or missing plan_id returns 404, never 403.
-  - test_run_requires_auth: unauthenticated request rejected before any work.
+    IDOR — non-owned or missing plan_id returns 404, never 403; no memo is
+    created and ``.delay`` is never called.
+  - test_run_requires_auth: unauthenticated request rejected before any work;
+    no memo created, ``.delay`` never called.
   - test_rerun_sets_parent_memo_id: running twice creates two ResearchMemo
-    rows; the second's parent_memo_id equals the first's id (D-03).
-  - test_run_citations_present_in_fundamentals: fundamentals section
-    citations each carry a canonical_id and a non-empty quote
-    (MEMO-02/MEMO-03 e2e).
+    rows; the second's parent_memo_id equals the first's id (D-03 lineage
+    is preserved by the dispatch-only endpoint too).
 
-Patches target the SERVICE boundary only — ``call_groq``, ``hybrid_retrieve``,
-``news_client``, ``arxiv_client``, ``fred_client``, and ``comparables_source``
-in each of the 6 agent modules — never the groq SDK, httpx, or any 3rd-party
-client directly (mirrors ``tests/agents/test_fundamental_analysis.py`` and
-``tests/agents/test_synthesis.py`` conventions).
+``run_research_task.delay`` is patched at the ``app.api.v1.research`` import
+site (the same object ``app.workers.tasks.run_research_task`` — ``research.py``
+imports it directly, so patching either path patches the same underlying
+Celery task instance) — never touching a real broker/Redis.
 
-The 4 new specialist agents open their OWN ``AsyncSession`` via
-``session_scope()`` and LangGraph genuinely dispatches them CONCURRENTLY
-through the real compiled graph in these end-to-end tests — so, unlike the
-per-agent unit tests, ``session_scope()`` is deliberately left UNPATCHED
-here. Patching all 4 concurrent specialists to share one ``AsyncSession``
-would reintroduce exactly the "another operation is in progress" collision
-``session_scope()`` exists to prevent (05-01-PLAN.md). Instead, the
-``_session_scope_targets_test_db`` autouse fixture below resets
-``app.db.session``'s lazy engine/session-factory singleton and points its
-``get_settings`` at ``test_settings``, so every real, independent
-``session_scope()`` call — from any of the 4 concurrently-dispatched
-specialists — opens its own connection against the SAME test-postgres
-database the ``db_session`` fixture already created the schema in.
+NOTE ON RETAINED FIXTURES: ``_patch_all_agents``, ``_session_scope_targets_
+test_db``, and the chunk/article/paper/observation/peer builder helpers
+below are no longer exercised by this module's own tests (the endpoint they
+supported — synchronous graph execution via HTTP — was removed in 06-05).
+They are kept here because ``tests/graph/test_research_graph_integration.py``
+imports them by name to drive the real compiled graph directly; moving them
+would be a larger, out-of-scope refactor for this plan. See that module's
+docstring for how it reuses them.
 
 Reuses the seeding + authed/unauthed client helpers from
 tests/api/test_research_api.py (D-03 db_session auto-skip when test-postgres
@@ -52,7 +39,7 @@ is unreachable).
 
 import uuid
 from contextlib import ExitStack, contextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -82,16 +69,14 @@ async def _session_scope_targets_test_db(test_settings: Settings):
     """Point ``app.db.session``'s lazy engine/session-factory singleton at
     the test database for the duration of each test in this module.
 
-    The 4 new specialist agents call the REAL ``session_scope()`` directly
-    (not through FastAPI's ``get_session`` DI, which only the request's own
-    session uses) — without this, the first concurrent specialist to build
-    the lazy singleton would read the real process environment/``.env``
-    ``Settings`` (missing ``DATABASE_URL``/``JWT_SECRET_KEY``/``GROQ_API_KEY``
-    in this test process, or worse, a real dev database if a `.env` happens
-    to be present). Resetting the singleton and patching ``get_settings``
-    makes every ``session_scope()`` call build a fresh connection against
-    ``test_settings.DATABASE_URL`` instead — the same test-postgres instance
-    ``db_session`` already created the schema in.
+    Retained for ``tests/graph/test_research_graph_integration.py``, which
+    imports this fixture by name (autouse fixtures apply to any module they
+    are imported into, per pytest's fixture-discovery-by-namespace
+    mechanics) — see that module's docstring. This module's own tests no
+    longer call the real ``session_scope()`` (the endpoint under test here
+    only touches its own request-scoped session and mocks
+    ``run_research_task.delay``), but leaving this fixture active is
+    harmless — it only resets a module-level singleton.
     """
     original_engine = db_session_module._engine
     original_factory = db_session_module._session_factory
@@ -184,10 +169,13 @@ def _patch_all_agents(
     peer_metrics: list[dict] | None = None,
 ):
     """Patch every one of the 5 specialist + Synthesis agent modules'
-    external service boundaries for a single /run invocation, so the real
-    compiled 5-way fan-out graph runs hermetically (no live network calls).
+    external service boundaries for a single real-graph invocation.
     ``session_scope()`` is deliberately left unpatched here — see the
     ``_session_scope_targets_test_db`` fixture docstring above.
+
+    Retained for ``tests/graph/test_research_graph_integration.py`` (see
+    module docstring) — no longer used by this module's own tests, since
+    ``run_plan`` no longer invokes the graph synchronously.
 
     Defaults produce an all-SUCCESS run across every agent; pass an empty
     list for any one source to drive that agent's PARTIAL/FAILED path
@@ -272,146 +260,50 @@ def _patch_all_agents(
 
 
 # ---------------------------------------------------------------------------
-# test_run_happy_path_has_named_sections (MEMO-01)
+# test_run_creates_pending_memo_and_dispatches_task (EXEC-05, D-01/D-02/D-03)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_run_happy_path_has_named_sections(
+async def test_run_creates_pending_memo_and_dispatches_task(
     db_session: AsyncSession, test_settings: Settings
 ) -> None:
-    """POST /run with full coverage persists a memo with every named section."""
+    """POST /run returns immediately with a PENDING memo and dispatches the
+    background task exactly once — no graph invocation, no per-agent
+    fields, no task_id in the response (D-03)."""
     user = await _seed_user(db_session)
     await _seed_company(db_session, ticker="AAPL")
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
     async with _make_authed_client(db_session, test_settings, user) as client:
-        with _patch_all_agents():
+        with patch(
+            "app.api.v1.research.run_research_task.delay", new=MagicMock()
+        ) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
+    assert set(body.keys()) == {"memo_id", "plan_id", "status"}
+    assert body["plan_id"] == str(plan.id)
+    assert body["status"] == "PENDING"
+
     memo_id = uuid.UUID(body["memo_id"])
 
-    result = await db_session.execute(
-        select(ResearchMemo).where(ResearchMemo.id == memo_id)
+    result = await db_session.execute(select(ResearchMemo))
+    memos = result.scalars().all()
+    assert len(memos) == 1
+    memo = memos[0]
+    assert memo.id == memo_id
+    assert memo.status.value == "PENDING"
+    assert memo.body == {}
+
+    mock_delay.assert_called_once_with(
+        memo_id=str(memo_id),
+        plan_id=str(plan.id),
+        ticker="AAPL",
+        user_id=str(user.id),
     )
-    memo = result.scalar_one_or_none()
-    assert memo is not None
-    for section in (
-        "fundamentals",
-        "sentiment",
-        "risks",
-        "macro",
-        "comparables",
-        "synthesis",
-    ):
-        assert section in memo.body, f"missing section {section!r} in memo.body"
-        assert memo.body[section] is not None
-
-
-# ---------------------------------------------------------------------------
-# test_run_reports_per_agent_statuses (EXEC-02)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_run_reports_per_agent_statuses(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
-    """Response body reports every agent's status and the overall memo status."""
-    user = await _seed_user(db_session)
-    await _seed_company(db_session, ticker="AAPL")
-    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
-    await db_session.commit()
-
-    async with _make_authed_client(db_session, test_settings, user) as client:
-        with _patch_all_agents():
-            resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    for field in (
-        "fundamentals_status",
-        "sentiment_status",
-        "risk_status",
-        "macro_status",
-        "comparables_status",
-        "synthesis_status",
-    ):
-        assert body[field] in ("SUCCESS", "PARTIAL", "FAILED"), field
-    assert body["status"] in ("COMPLETE", "PARTIAL", "FAILED")
-
-
-# ---------------------------------------------------------------------------
-# test_run_partial_on_fundamentals_failure (EXEC-03, SC#5)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_run_partial_on_fundamentals_failure(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
-    """Zero retrieved chunks -> 200, memo PARTIAL, fundamentals agent FAILED."""
-    user = await _seed_user(db_session)
-    await _seed_company(db_session, ticker="AAPL")
-    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
-    await db_session.commit()
-
-    async with _make_authed_client(db_session, test_settings, user) as client:
-        with _patch_all_agents(chunks=[]):
-            resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["fundamentals_status"] == "FAILED"
-    assert body["status"] == "PARTIAL"
-
-    memo_id = uuid.UUID(body["memo_id"])
-    result = await db_session.execute(
-        select(ResearchMemo).where(ResearchMemo.id == memo_id)
-    )
-    memo = result.scalar_one_or_none()
-    assert memo is not None
-    assert memo.status.value == "PARTIAL"
-
-
-# ---------------------------------------------------------------------------
-# test_run_partial_on_one_specialist_failure (EXEC-04)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_run_partial_on_one_specialist_failure(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
-    """Comparables source returns no peers while the other 4 agents succeed
-    -> 200, memo PARTIAL, comparables section carries a non-null reason
-    string (EXEC-04: never silently omitted)."""
-    user = await _seed_user(db_session)
-    await _seed_company(db_session, ticker="AAPL")
-    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
-    await db_session.commit()
-
-    async with _make_authed_client(db_session, test_settings, user) as client:
-        with _patch_all_agents(peers=[]):
-            resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["comparables_status"] == "FAILED"
-    assert body["status"] == "PARTIAL"
-
-    memo_id = uuid.UUID(body["memo_id"])
-    result = await db_session.execute(
-        select(ResearchMemo).where(ResearchMemo.id == memo_id)
-    )
-    memo = result.scalar_one_or_none()
-    assert memo is not None
-    comparables_section = memo.body["comparables"]
-    assert comparables_section is not None
-    assert comparables_section.get("reason")
 
 
 # ---------------------------------------------------------------------------
@@ -430,10 +322,13 @@ async def test_run_other_user_plan_returns_404(
     await db_session.commit()
 
     async with _make_authed_client(db_session, test_settings, other_user) as client:
-        with _patch_all_agents():
+        with patch(
+            "app.api.v1.research.run_research_task.delay", new=MagicMock()
+        ) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
 
     assert resp.status_code == 404, resp.text
+    mock_delay.assert_not_called()
 
     memo_rows = await db_session.execute(select(ResearchMemo))
     assert memo_rows.scalars().all() == []
@@ -450,14 +345,17 @@ async def test_run_missing_plan_returns_404(
     random_plan_id = uuid.uuid4()
 
     async with _make_authed_client(db_session, test_settings, user) as client:
-        with _patch_all_agents():
+        with patch(
+            "app.api.v1.research.run_research_task.delay", new=MagicMock()
+        ) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{random_plan_id}/run")
 
     assert resp.status_code == 404, resp.text
+    mock_delay.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# test_run_requires_auth (T-04-AUTHZ)
+# test_run_requires_auth (T-06-07-AUTHZ)
 # ---------------------------------------------------------------------------
 
 
@@ -465,19 +363,23 @@ async def test_run_missing_plan_returns_404(
 async def test_run_requires_auth(
     db_session: AsyncSession, test_settings: Settings
 ) -> None:
-    """Unauthenticated /run request is rejected before any work; no memo created."""
+    """Unauthenticated /run request is rejected before any work; no memo
+    created, no dispatch."""
     user = await _seed_user(db_session)
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
     async with _make_unauthed_client(db_session, test_settings) as client:
-        with _patch_all_agents():
+        with patch(
+            "app.api.v1.research.run_research_task.delay", new=MagicMock()
+        ) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
 
     assert resp.status_code in (401, 403), (
         f"Expected 401 or 403 for unauthenticated /run, got "
         f"{resp.status_code}: {resp.text}"
     )
+    mock_delay.assert_not_called()
 
     memo_rows = await db_session.execute(select(ResearchMemo))
     assert memo_rows.scalars().all() == []
@@ -493,19 +395,20 @@ async def test_rerun_sets_parent_memo_id(
     db_session: AsyncSession, test_settings: Settings
 ) -> None:
     """Running twice creates two ResearchMemo rows; the second's parent_memo_id
-    equals the first's id."""
+    equals the first's id — lineage is preserved by the dispatch-only
+    endpoint too."""
     user = await _seed_user(db_session)
     await _seed_company(db_session, ticker="AAPL")
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
     await db_session.commit()
 
     async with _make_authed_client(db_session, test_settings, user) as client:
-        with _patch_all_agents():
+        with patch("app.api.v1.research.run_research_task.delay", new=MagicMock()):
             first_resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
         assert first_resp.status_code == 200, first_resp.text
         first_memo_id = uuid.UUID(first_resp.json()["memo_id"])
 
-        with _patch_all_agents():
+        with patch("app.api.v1.research.run_research_task.delay", new=MagicMock()):
             second_resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
         assert second_resp.status_code == 200, second_resp.text
         second_memo_id = uuid.UUID(second_resp.json()["memo_id"])
@@ -520,38 +423,3 @@ async def test_rerun_sets_parent_memo_id(
 
     second_memo = next(m for m in memos if m.id == second_memo_id)
     assert second_memo.parent_memo_id == first_memo_id
-
-
-# ---------------------------------------------------------------------------
-# test_run_citations_present_in_fundamentals (MEMO-02/MEMO-03 e2e)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_run_citations_present_in_fundamentals(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
-    """Fundamentals section citations each carry a canonical_id and non-empty quote."""
-    user = await _seed_user(db_session)
-    await _seed_company(db_session, ticker="AAPL")
-    plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
-    await db_session.commit()
-
-    async with _make_authed_client(db_session, test_settings, user) as client:
-        with _patch_all_agents():
-            resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
-
-    assert resp.status_code == 200, resp.text
-    memo_id = uuid.UUID(resp.json()["memo_id"])
-
-    result = await db_session.execute(
-        select(ResearchMemo).where(ResearchMemo.id == memo_id)
-    )
-    memo = result.scalar_one_or_none()
-    assert memo is not None
-
-    citations = memo.body["fundamentals"]["citations"]
-    assert len(citations) > 0
-    for citation in citations:
-        assert citation["canonical_id"]
-        assert citation["quote"]
