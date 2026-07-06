@@ -101,6 +101,23 @@ def _get_client(api_key: str) -> AsyncGroq:
     return _client
 
 
+def reset_groq_client() -> None:
+    """Drop the lazy AsyncGroq singleton so the next call_groq() rebuilds it
+    bound to the current event loop.
+
+    Each Celery task invocation (``app.workers.tasks.run_research_task``)
+    runs the async research graph under its own fresh ``asyncio.run(...)``
+    event loop. AsyncGroq wraps an httpx.AsyncClient internally, which
+    raises "RuntimeError: Event loop is closed" if reused inside a new loop
+    after the one it was created in has closed. The task calls this before
+    its own ``asyncio.run`` so ``_get_client`` rebuilds it fresh. Mirrors
+    ``app/db/session.py::reset_session_factory`` exactly — drop the
+    reference, let the existing lazy-init path recreate it.
+    """
+    global _client
+    _client = None
+
+
 async def call_groq(
     prompt: str,
     model: str = "llama-3.3-70b-versatile",

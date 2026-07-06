@@ -147,3 +147,37 @@ def test_uses_stdlib_xml_parser() -> None:
 
     source = inspect.getsource(mod)
     assert "xml.etree" in source
+
+
+# ---------------------------------------------------------------------------
+# reset_arxiv_client — event-loop safety across Celery task boundaries
+# ---------------------------------------------------------------------------
+
+
+def test_reset_arxiv_client_replaces_the_httpx_client() -> None:
+    """reset_arxiv_client() swaps arxiv_client's internal httpx.AsyncClient
+    for a fresh one, without replacing the arxiv_client singleton object.
+
+    Each Celery task runs the async research graph under its own fresh
+    asyncio.run(...) event loop (same rationale as
+    app/db/session.py::reset_session_factory). An httpx.AsyncClient opened
+    inside a prior task's now-closed event loop raises "RuntimeError: Event
+    loop is closed" if reused inside a new loop.
+    """
+    import httpx
+
+    import app.services.arxiv_client as mod
+
+    original_singleton_id = id(mod.arxiv_client)
+    original_client = mod.arxiv_client._client
+
+    mod.reset_arxiv_client()
+
+    assert id(mod.arxiv_client) == original_singleton_id, (
+        "reset_arxiv_client must not replace the module-level singleton object"
+    )
+    assert mod.arxiv_client._client is not original_client, (
+        "reset_arxiv_client must replace the underlying httpx.AsyncClient"
+    )
+    assert isinstance(mod.arxiv_client._client, httpx.AsyncClient)
+    assert str(mod.arxiv_client._client.base_url) == ARXIV_BASE_URL

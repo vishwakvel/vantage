@@ -13,10 +13,14 @@ publishes a terminal progress event (D-10) so the WebSocket route
 are moved here verbatim from ``app/api/v1/research.py`` — they will be
 deleted from that module in 06-05; this module is the new source of truth.
 
-Event-loop safety: each task invocation calls ``reset_session_factory()``
-before its own ``asyncio.run(...)`` so the async DB engine is rebuilt fresh
-in the current loop rather than reused from a prior (now-closed) task's
-loop (see ``app/db/session.py::reset_session_factory`` docstring).
+Event-loop safety: each task invocation resets every module-level singleton
+that wraps a persistent async network client (DB engine, and the httpx-based
+EDGAR/news/arXiv/Groq clients) before its own ``asyncio.run(...)``, so none
+of them are reused from a prior (now-closed) task's event loop — reusing an
+asyncpg connection or httpx.AsyncClient bound to a closed loop raises
+"RuntimeError: Event loop is closed" (see
+``app/db/session.py::reset_session_factory`` docstring, which the other
+four resets mirror exactly).
 """
 
 from __future__ import annotations
@@ -37,6 +41,10 @@ from app.ingestion.section_constants import (
     SECTION_SENTIMENT,
     SECTION_SYNTHESIS,
 )
+from app.services.arxiv_client import reset_arxiv_client
+from app.services.edgar_client import reset_edgar_client
+from app.services.groq_client import reset_groq_client
+from app.services.news_client import reset_news_client
 from app.services.progress_publisher import publish_memo_terminal
 from app.workers.celery_app import celery_app
 
@@ -192,9 +200,14 @@ async def _run_research_async(
 def run_research_task(memo_id: str, plan_id: str, ticker: str, user_id: str) -> None:
     """Celery entry point — synchronous wrapper around the async task body.
 
-    Resets the lazy DB engine/session-factory singletons before running its
-    own ``asyncio.run(...)`` so this task never reuses an async engine bound
-    to a previous task's (now-closed) event loop.
+    Resets the DB engine/session-factory singleton AND every httpx-based
+    service client singleton (EDGAR, news, arXiv, Groq) before running its
+    own ``asyncio.run(...)``, so none of them reuse a connection bound to a
+    previous task's (now-closed) event loop.
     """
     reset_session_factory()
+    reset_edgar_client()
+    reset_news_client()
+    reset_arxiv_client()
+    reset_groq_client()
     asyncio.run(_run_research_async(memo_id, plan_id, ticker, user_id))
