@@ -10,6 +10,11 @@ build/
 htmlcov/
 .mypy_cache/
 
+# Frontend (Vite + React + TS)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 # GSD planning & AI tooling — not part of the app
 .claude/
 .planning/
