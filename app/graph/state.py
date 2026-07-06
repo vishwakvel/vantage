@@ -23,9 +23,19 @@ class AgentGraphState(TypedDict):
     module (keeps ``app/graph`` free of DB-layer coupling). Because the
     graph is compiled without a checkpointer, no attempt is ever made to
     serialize ``session`` (or any other field) to persistent storage.
+
+    ``memo_id`` identifies the ``ResearchMemo`` row this run writes to and
+    selects the per-memo Redis progress channel
+    (``app.services.progress_publisher.progress_channel``) that
+    ``_with_progress`` (``app/graph/research_graph.py``) publishes
+    per-agent status transitions on (EXEC-01). Callers that build state
+    without ``memo_id`` (e.g. existing graph integration tests) remain
+    valid — ``_with_progress`` treats a missing/empty ``memo_id`` as
+    "no progress emit" and no-ops.
     """
 
     plan_id: str
+    memo_id: str
     ticker: str
     user_id: str
     session: Any
