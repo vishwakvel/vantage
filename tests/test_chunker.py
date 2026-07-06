@@ -391,3 +391,101 @@ def test_item_header_case_insensitive() -> None:
 
     assert SECTION_RISK_FACTORS in sections_lower, "Lowercase 'item 1a' not detected"
     assert SECTION_RISK_FACTORS in sections_upper, "Uppercase 'ITEM 1A' not detected"
+
+
+# ---------------------------------------------------------------------------
+# Cross-reference regression (mid-sentence "Item 1A" is not a heading)
+# ---------------------------------------------------------------------------
+
+
+def test_cross_reference_to_item_1a_inside_mda_stays_mda() -> None:
+    """A mid-paragraph cross-reference like "...see Item 1A of our Annual
+    Report..." must NOT be treated as a Risk Factors heading -- it's a
+    cross-reference embedded in running MD&A prose, not a section boundary.
+    Real MD&A content appearing AFTER that phrase (tax rate, dividends)
+    must stay tagged SECTION_MDA, not get split off into
+    SECTION_RISK_FACTORS.
+
+    Regression test for the bug where any bare "Item 1A" match anywhere in
+    the flattened text -- including inside a sentence like "see Item 1A of
+    our most recent Annual Report on Form 10-K" -- was treated as a new
+    section heading, silently reclassifying unrelated MD&A content
+    (gross margin, tax rate, dividends) as risk-factors disclosure.
+    """
+    html = (
+        "<p>Item 7. Management Discussion and Analysis</p>"
+        "<p>Our gross margin improved this quarter due to favorable product "
+        "mix. For a discussion of factors that could affect our results, "
+        "see Item 1A of our most recent Annual Report on Form 10-K. Our "
+        "effective tax rate for the quarter was 15.5 percent. We declared "
+        "a cash dividend of 0.24 dollars per share during the period, "
+        "consistent with our capital return program.</p>"
+    )
+    chunks = section_aware_chunk(html, BASE_META)
+
+    sections = {c["metadata"]["section"] for c in chunks}
+    assert SECTION_RISK_FACTORS not in sections, (
+        "Mid-sentence cross-reference to 'Item 1A' was wrongly treated as "
+        "a Risk Factors heading"
+    )
+    assert SECTION_MDA in sections
+
+    mda_text = " ".join(
+        c["text"] for c in chunks if c["metadata"]["section"] == SECTION_MDA
+    )
+    assert "tax rate" in mda_text
+    assert "dividend" in mda_text
+
+
+def test_heading_at_start_of_own_line_still_detected_after_cross_reference() -> None:
+    """A genuine heading is still detected even after a prior paragraph
+    contains an inline "Item N" cross-reference -- the fix must not
+    suppress real headings, only mid-sentence false positives."""
+    html = (
+        "<p>Item 7. Management Discussion and Analysis</p>"
+        "<p>See Item 1A of our most recent Annual Report for risk "
+        "discussion.</p>"
+        "<p>Item 8. Financial Statements</p>"
+        "<p>See consolidated financial statements attached hereto.</p>"
+    )
+    chunks = section_aware_chunk(html, BASE_META)
+    sections = {c["metadata"]["section"] for c in chunks}
+    assert SECTION_MDA in sections
+    assert SECTION_FINANCIALS in sections
+    assert SECTION_RISK_FACTORS not in sections
+
+
+def test_heading_with_nbsp_entity_separator_is_detected() -> None:
+    """Real EDGAR filings commonly separate a heading's item number from
+    its title with "&#160;" (non-breaking space) entities instead of a
+    literal space -- e.g. Apple's actual 10-Q markup renders the Risk
+    Factors heading as:
+        <span ...>Item 1A.&#160;&#160;&#160;&#160;Risk Factors</span>
+    This must still be recognized as a genuine heading (regression test
+    for a live-system finding: the position+title-shape check initially
+    missed every real heading because "&#160;" isn't literal whitespace
+    until HTML-entity-decoded).
+    """
+    html = (
+        "<div><span>Item 1A.&#160;&#160;&#160;&#160;Risk Factors</span></div>"
+        "<div><span>The Company's business, reputation, results of "
+        "operations, and financial condition can be materially and "
+        "adversely affected by a number of factors.</span></div>"
+        "<div><span>Item 7.&#160;&#160;&#160;&#160;Management&#8217;s "
+        "Discussion and Analysis</span></div>"
+        "<div><span>Revenue increased and operating income was strong "
+        "this quarter.</span></div>"
+    )
+    chunks = section_aware_chunk(html, BASE_META)
+    sections = {c["metadata"]["section"] for c in chunks}
+    assert SECTION_RISK_FACTORS in sections, (
+        f"nbsp-separated 'Item 1A' heading not detected; got sections: {sections}"
+    )
+    assert SECTION_MDA in sections, (
+        f"nbsp-separated 'Item 7' heading not detected; got sections: {sections}"
+    )
+
+    risk_text = " ".join(
+        c["text"] for c in chunks if c["metadata"]["section"] == SECTION_RISK_FACTORS
+    )
+    assert "materially and adversely affected" in risk_text
