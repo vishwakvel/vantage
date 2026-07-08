@@ -205,6 +205,100 @@ async def test_run_research_async_updates_existing_memo_with_full_body(
     assert count_result.scalar_one() == 1
 
 
+async def test_run_research_async_carries_contradictions_through(
+    db_session: AsyncSession,
+):
+    """MEMO-04: contradictions produced by Synthesis (Plan 02) flow
+    unmodified through body assembly into ResearchMemo.body."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    contradictions = [
+        {
+            "topic": "Revenue growth outlook",
+            "agents": ["FundamentalAnalysis", "SentimentNLP"],
+            "description": "Fundamentals shows accelerating growth while "
+            "sentiment coverage is broadly negative.",
+            "severity": "medium",
+        }
+    ]
+    final_state = {
+        **_FINAL_STATE,
+        "synthesis_output": {
+            "narrative": "Overall positive outlook.",
+            "contradictions": contradictions,
+        },
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=final_state)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.body["synthesis"]["contradictions"] == contradictions
+
+
+async def test_run_research_async_synthesis_failed_still_has_empty_contradictions(
+    db_session: AsyncSession,
+):
+    """EXEC-04 precedent applied to MEMO-04: a FAILED synthesis section
+    still exposes an empty contradictions list, never a missing key."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    final_state = {
+        **_FINAL_STATE,
+        "synthesis_output": None,
+        "synthesis_status": "FAILED",
+        "memo_status": "FAILED",
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=final_state)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.body["synthesis"]["contradictions"] == []
+
+
 async def test_run_research_async_marks_memo_failed_on_unexpected_exception(
     db_session: AsyncSession,
 ):
