@@ -42,6 +42,7 @@ const STATUS_BADGES: Record<string, StatusBadge> = {
   SUCCESS: { color: "#16A34A", text: "Success" },
   PARTIAL: { color: "#D97706", text: "Partial" },
   FAILED: { color: "#DC2626", text: "Failed" },
+  COMPLETE: { color: "#16A34A", text: "Complete" },
 };
 
 /**
@@ -51,4 +52,19 @@ const STATUS_BADGES: Record<string, StatusBadge> = {
  */
 export function statusBadge(status: string): StatusBadge {
   return STATUS_BADGES[status] ?? STATUS_BADGES.Queued;
+}
+
+export const SEVERITY_BADGES: Record<string, StatusBadge> = {
+  High: { color: "#DC2626", text: "High" },
+  Medium: { color: "#D97706", text: "Medium" },
+  Low: { color: "#16A34A", text: "Low" },
+};
+
+/**
+ * Maps a contradiction severity tier (High/Medium/Low) to its badge color +
+ * display text per the UI-SPEC Severity Badge Colors table (MEMO-04, D-03).
+ * Falls back to the Low tier for any unrecognized severity value.
+ */
+export function severityBadge(severity: string): StatusBadge {
+  return SEVERITY_BADGES[severity] ?? SEVERITY_BADGES.Low;
 }
