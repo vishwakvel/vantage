@@ -35,6 +35,7 @@ from app.db.session import reset_session_factory, session_scope
 from app.graph.research_graph import build_research_graph
 from app.ingestion.section_constants import (
     SECTION_COMPARABLES,
+    SECTION_CONTRADICTIONS,
     SECTION_FUNDAMENTALS,
     SECTION_MACRO,
     SECTION_RISKS,
@@ -184,6 +185,14 @@ async def _run_research_async(
                         "status": final_state.get(status_field),
                         "reason": reasons_by_agent_type.get(agent_type),
                     }
+
+            # MEMO-04: the synthesis section always exposes a contradictions
+            # list — on the SUCCESS path it is already present from
+            # synthesis_output (Plan 02); on the FAILED-marker path above it
+            # is backfilled here so body.synthesis.contradictions is never
+            # missing/undefined for the frontend (EXEC-04 precedent, applied
+            # one level down to this nested key).
+            body[SECTION_SYNTHESIS].setdefault(SECTION_CONTRADICTIONS, [])
 
             memo.status = ResearchMemoStatus(final_state["memo_status"])
             memo.body = body

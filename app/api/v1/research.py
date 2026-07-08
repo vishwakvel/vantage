@@ -240,8 +240,9 @@ class RunAsyncResponse(BaseModel):
 class MemoResponse(BaseModel):
     """Returned by both GET memo routes (D-04).
 
-    The memo is returned as raw structured JSON — the frontend renders it
-    unformatted this phase per 06-UI-SPEC.md.
+    The memo body is structured JSON; the frontend renders it as a formatted
+    memo view (MemoView) per Phase 7's 07-UI-SPEC.md, including a nested
+    ``body['synthesis']['contradictions']`` list (MEMO-04).
     """
 
     memo_id: str
