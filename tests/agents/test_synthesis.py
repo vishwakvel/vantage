@@ -26,6 +26,7 @@ never the groq SDK directly (mirrors ``tests/agents/test_fundamental_analysis.py
 boundary-mock convention).
 """
 
+import json
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -33,7 +34,12 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.synthesis import _build_prompt, _compute_memo_status
+from app.agents.synthesis import (
+    _build_prompt,
+    _compute_memo_status,
+    _parse_contradictions,
+    _split_narrative_and_json,
+)
 from app.db.models import (
     AgentOutput,
     AgentOutputCompleteness,
@@ -233,6 +239,120 @@ def test_build_prompt_embeds_all_five_none_guarded() -> None:
     assert "SentimentNLP findings: unavailable for this run." in prompt
     assert "MacroSector findings: unavailable for this run." in prompt
     assert "ComparableCompanies findings: unavailable for this run." in prompt
+
+
+# ---------------------------------------------------------------------------
+# _split_narrative_and_json / _parse_contradictions unit tests (pure
+# functions, no DB) -- 07-02-PLAN.md Task 1 (D-01/D-02/D-04)
+# ---------------------------------------------------------------------------
+
+
+def test_split_narrative_and_json_extracts_fence() -> None:
+    """Narrative text before a ```json fence is isolated from the fenced
+    payload; the fence delimiters themselves are stripped from both parts."""
+    raw = (
+        "Overall, AAPL looks strong given the findings above.\n"
+        '```json\n[{"topic": "x", "agents": ["a", "b"], '
+        '"description": "y", "severity": "Low"}]\n```'
+    )
+    narrative, fenced = _split_narrative_and_json(raw)
+
+    assert narrative == "Overall, AAPL looks strong given the findings above."
+    assert fenced is not None
+    assert json.loads(fenced) == [
+        {
+            "topic": "x",
+            "agents": ["a", "b"],
+            "description": "y",
+            "severity": "Low",
+        }
+    ]
+
+
+def test_split_narrative_and_json_no_fence() -> None:
+    """No fence present -> the whole stripped text is the narrative and the
+    fenced portion is None."""
+    raw = "  Just a plain narrative, no fenced block at all.  "
+    narrative, fenced = _split_narrative_and_json(raw)
+
+    assert narrative == "Just a plain narrative, no fenced block at all."
+    assert fenced is None
+
+
+def test_parse_contradictions_happy_path() -> None:
+    """Well-formed JSON array of valid items returns a list of dicts, each
+    carrying topic/agents/description/severity."""
+    fenced = json.dumps(
+        [
+            {
+                "topic": "Revenue growth outlook",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": (
+                    "Fundamentals sees accelerating growth while Macro flags "
+                    "sector-wide demand softening."
+                ),
+                "severity": "Medium",
+            }
+        ]
+    )
+
+    items = _parse_contradictions(fenced)
+
+    assert len(items) == 1
+    assert items[0]["topic"] == "Revenue growth outlook"
+    assert items[0]["agents"] == ["FundamentalAnalysis", "MacroSector"]
+    assert "description" in items[0]
+    assert items[0]["severity"] == "Medium"
+
+
+def test_parse_contradictions_repairs_malformed_json() -> None:
+    """Mildly malformed JSON (trailing comma) is repaired via json_repair and
+    still yields the valid item(s)."""
+    fenced = (
+        '[{"topic": "Valuation", "agents": ["FundamentalAnalysis", '
+        '"RiskAssessment"], "description": "Disagreement on valuation.", '
+        '"severity": "Low",}]'
+    )
+
+    items = _parse_contradictions(fenced)
+
+    assert len(items) == 1
+    assert items[0]["topic"] == "Valuation"
+    assert items[0]["severity"] == "Low"
+
+
+def test_parse_contradictions_skips_one_bad_item() -> None:
+    """An array with one valid item and one item with an invalid (lowercase)
+    severity returns only the valid item -- the bad item is skipped, not the
+    whole list (Pitfall 2)."""
+    fenced = json.dumps(
+        [
+            {
+                "topic": "Good item",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": "A valid contradiction.",
+                "severity": "High",
+            },
+            {
+                "topic": "Bad severity casing",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": "Severity is lowercase, which is invalid.",
+                "severity": "high",
+            },
+        ]
+    )
+
+    items = _parse_contradictions(fenced)
+
+    assert len(items) == 1
+    assert items[0]["topic"] == "Good item"
+
+
+def test_parse_contradictions_returns_empty_on_unrecoverable() -> None:
+    """Unrecoverable non-JSON string and a None input both return [] without
+    raising."""
+    assert _parse_contradictions(None) == []
+    assert _parse_contradictions("not json at all") == []
 
 
 # ---------------------------------------------------------------------------
