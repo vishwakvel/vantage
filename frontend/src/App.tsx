@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { getMemo, login, startRun } from "./api";
+import { getMemo, login, startRun, type MemoResponse } from "./api";
 import { agentLabel, AGENT_ORDER, statusBadge } from "./labels";
+import MemoView from "./MemoView";
 import { connectProgress, type ProgressConnection } from "./ws";
 
 type StatusMap = Record<string, string>;
@@ -19,7 +20,7 @@ export default function App() {
   const [terminalStatus, setTerminalStatus] = useState<string | null>(null);
   const [wsDropped, setWsDropped] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [memoJson, setMemoJson] = useState<string | null>(null);
+  const [memo, setMemo] = useState<MemoResponse | null>(null);
 
   const connectionRef = useRef<ProgressConnection | null>(null);
 
@@ -55,7 +56,7 @@ export default function App() {
       setMemoId(response.memo_id);
       setTerminalStatus(null);
       setWsDropped(false);
-      setMemoJson(null);
+      setMemo(null);
 
       const seeded: StatusMap = {};
       for (const agentType of AGENT_ORDER) {
@@ -96,8 +97,7 @@ export default function App() {
   async function handleViewMemo() {
     if (!memoId || !token) return;
     try {
-      const memo = await getMemo(memoId, token);
-      setMemoJson(JSON.stringify(memo, null, 2));
+      setMemo(await getMemo(memoId, token));
     } catch {
       setError("Couldn't load the memo. Try again.");
     }
@@ -218,7 +218,7 @@ export default function App() {
           </div>
         )}
 
-        {memoJson && <pre className="memo-json">{memoJson}</pre>}
+        {memo && <MemoView memo={memo} />}
       </div>
     </div>
   );
