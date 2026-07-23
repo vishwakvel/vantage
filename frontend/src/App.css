@@ -185,3 +185,73 @@ body {
   overflow-x: auto;
   font-size: 14px;
 }
+
+/* Formatted memo view (Phase 7 — MemoView / ContradictionsPanel) */
+
+.memo-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.memo-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.memo-header .heading {
+  margin: 0;
+}
+
+.section-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.badge-unavailable {
+  background-color: var(--color-destructive);
+  width: fit-content;
+}
+
+.contradiction-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.contradiction-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  background: var(--color-bg);
+  border-radius: 6px;
+  padding: var(--space-sm) var(--space-md);
+}
+
+.contradiction-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.agent-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.agent-tag {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-surface);
+  padding: 2px var(--space-sm);
+  border-radius: 999px;
+}

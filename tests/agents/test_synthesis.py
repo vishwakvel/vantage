@@ -26,6 +26,7 @@ never the groq SDK directly (mirrors ``tests/agents/test_fundamental_analysis.py
 boundary-mock convention).
 """
 
+import json
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -33,7 +34,12 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.synthesis import _build_prompt, _compute_memo_status
+from app.agents.synthesis import (
+    _build_prompt,
+    _compute_memo_status,
+    _parse_contradictions,
+    _split_narrative_and_json,
+)
 from app.db.models import (
     AgentOutput,
     AgentOutputCompleteness,
@@ -233,6 +239,120 @@ def test_build_prompt_embeds_all_five_none_guarded() -> None:
     assert "SentimentNLP findings: unavailable for this run." in prompt
     assert "MacroSector findings: unavailable for this run." in prompt
     assert "ComparableCompanies findings: unavailable for this run." in prompt
+
+
+# ---------------------------------------------------------------------------
+# _split_narrative_and_json / _parse_contradictions unit tests (pure
+# functions, no DB) -- 07-02-PLAN.md Task 1 (D-01/D-02/D-04)
+# ---------------------------------------------------------------------------
+
+
+def test_split_narrative_and_json_extracts_fence() -> None:
+    """Narrative text before a ```json fence is isolated from the fenced
+    payload; the fence delimiters themselves are stripped from both parts."""
+    raw = (
+        "Overall, AAPL looks strong given the findings above.\n"
+        '```json\n[{"topic": "x", "agents": ["a", "b"], '
+        '"description": "y", "severity": "Low"}]\n```'
+    )
+    narrative, fenced = _split_narrative_and_json(raw)
+
+    assert narrative == "Overall, AAPL looks strong given the findings above."
+    assert fenced is not None
+    assert json.loads(fenced) == [
+        {
+            "topic": "x",
+            "agents": ["a", "b"],
+            "description": "y",
+            "severity": "Low",
+        }
+    ]
+
+
+def test_split_narrative_and_json_no_fence() -> None:
+    """No fence present -> the whole stripped text is the narrative and the
+    fenced portion is None."""
+    raw = "  Just a plain narrative, no fenced block at all.  "
+    narrative, fenced = _split_narrative_and_json(raw)
+
+    assert narrative == "Just a plain narrative, no fenced block at all."
+    assert fenced is None
+
+
+def test_parse_contradictions_happy_path() -> None:
+    """Well-formed JSON array of valid items returns a list of dicts, each
+    carrying topic/agents/description/severity."""
+    fenced = json.dumps(
+        [
+            {
+                "topic": "Revenue growth outlook",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": (
+                    "Fundamentals sees accelerating growth while Macro flags "
+                    "sector-wide demand softening."
+                ),
+                "severity": "Medium",
+            }
+        ]
+    )
+
+    items = _parse_contradictions(fenced)
+
+    assert len(items) == 1
+    assert items[0]["topic"] == "Revenue growth outlook"
+    assert items[0]["agents"] == ["FundamentalAnalysis", "MacroSector"]
+    assert "description" in items[0]
+    assert items[0]["severity"] == "Medium"
+
+
+def test_parse_contradictions_repairs_malformed_json() -> None:
+    """Mildly malformed JSON (trailing comma) is repaired via json_repair and
+    still yields the valid item(s)."""
+    fenced = (
+        '[{"topic": "Valuation", "agents": ["FundamentalAnalysis", '
+        '"RiskAssessment"], "description": "Disagreement on valuation.", '
+        '"severity": "Low",}]'
+    )
+
+    items = _parse_contradictions(fenced)
+
+    assert len(items) == 1
+    assert items[0]["topic"] == "Valuation"
+    assert items[0]["severity"] == "Low"
+
+
+def test_parse_contradictions_skips_one_bad_item() -> None:
+    """An array with one valid item and one item with an invalid (lowercase)
+    severity returns only the valid item -- the bad item is skipped, not the
+    whole list (Pitfall 2)."""
+    fenced = json.dumps(
+        [
+            {
+                "topic": "Good item",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": "A valid contradiction.",
+                "severity": "High",
+            },
+            {
+                "topic": "Bad severity casing",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": "Severity is lowercase, which is invalid.",
+                "severity": "high",
+            },
+        ]
+    )
+
+    items = _parse_contradictions(fenced)
+
+    assert len(items) == 1
+    assert items[0]["topic"] == "Good item"
+
+
+def test_parse_contradictions_returns_empty_on_unrecoverable() -> None:
+    """Unrecoverable non-JSON string and a None input both return [] without
+    raising."""
+    assert _parse_contradictions(None) == []
+    assert _parse_contradictions("not json at all") == []
 
 
 # ---------------------------------------------------------------------------
@@ -482,3 +602,101 @@ async def test_one_agenttask_and_one_agentoutput_persisted(
     ).scalars().all()
     assert len(output_rows) == 1
     assert output_rows[0].completeness == AgentOutputCompleteness.FULL
+
+
+# ---------------------------------------------------------------------------
+# Contradictions wiring in synthesis_node (07-02-PLAN.md Task 2, D-01/D-02/D-07)
+# ---------------------------------------------------------------------------
+
+
+async def test_synthesis_degrades_gracefully_on_bad_contradictions_json(
+    db_session: AsyncSession,
+) -> None:
+    """A malformed/unparseable fenced block never flips synthesis_status away
+    from SUCCESS and never erases the take narrative (D-02)."""
+    from app.agents.synthesis import synthesis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = await _build_all_success_state(db_session, plan)
+
+    narrative = "Overall, AAPL presents a compelling investment case."
+    raw_response = narrative + '\n```json\n{"not": "a list", oops\n```'
+
+    with patch(
+        "app.agents.synthesis.call_groq",
+        AsyncMock(return_value=raw_response),
+    ):
+        result = await synthesis_node(state)
+
+    assert result["synthesis_status"] == AgentTaskStatus.SUCCESS.value
+    synthesis_output = result["synthesis_output"]
+    assert synthesis_output["take"] == narrative
+    assert synthesis_output["contradictions"] == []
+
+
+async def test_synthesis_empty_contradictions_is_valid(
+    db_session: AsyncSession,
+) -> None:
+    """An explicit empty fenced array is a valid final result, not a missing
+    key (D-07)."""
+    from app.agents.synthesis import synthesis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = await _build_all_success_state(db_session, plan)
+
+    narrative = "All five specialists are in agreement on the outlook."
+    raw_response = narrative + "\n```json\n[]\n```"
+
+    with patch(
+        "app.agents.synthesis.call_groq",
+        AsyncMock(return_value=raw_response),
+    ):
+        result = await synthesis_node(state)
+
+    assert result["synthesis_status"] == AgentTaskStatus.SUCCESS.value
+    synthesis_output = result["synthesis_output"]
+    assert "contradictions" in synthesis_output
+    assert synthesis_output["contradictions"] == []
+    assert synthesis_output["take"] == narrative
+
+
+async def test_synthesis_populated_contradictions(db_session: AsyncSession) -> None:
+    """A valid fenced item is parsed into synthesis_output["contradictions"]
+    with the correct severity; take excludes the fence text."""
+    from app.agents.synthesis import synthesis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = await _build_all_success_state(db_session, plan)
+
+    narrative = "Fundamentals and Macro disagree on the growth trajectory."
+    fenced = json.dumps(
+        [
+            {
+                "topic": "Revenue growth outlook",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": (
+                    "Fundamentals sees accelerating growth while Macro flags "
+                    "sector-wide demand softening."
+                ),
+                "severity": "Medium",
+            }
+        ]
+    )
+    raw_response = f"{narrative}\n```json\n{fenced}\n```"
+
+    with patch(
+        "app.agents.synthesis.call_groq",
+        AsyncMock(return_value=raw_response),
+    ):
+        result = await synthesis_node(state)
+
+    assert result["synthesis_status"] == AgentTaskStatus.SUCCESS.value
+    synthesis_output = result["synthesis_output"]
+    assert synthesis_output["take"] == narrative
+    contradictions = synthesis_output["contradictions"]
+    assert len(contradictions) == 1
+    assert contradictions[0]["topic"] == "Revenue growth outlook"
+    assert contradictions[0]["severity"] == "Medium"
