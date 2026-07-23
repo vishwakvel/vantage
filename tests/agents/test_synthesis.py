@@ -602,3 +602,101 @@ async def test_one_agenttask_and_one_agentoutput_persisted(
     ).scalars().all()
     assert len(output_rows) == 1
     assert output_rows[0].completeness == AgentOutputCompleteness.FULL
+
+
+# ---------------------------------------------------------------------------
+# Contradictions wiring in synthesis_node (07-02-PLAN.md Task 2, D-01/D-02/D-07)
+# ---------------------------------------------------------------------------
+
+
+async def test_synthesis_degrades_gracefully_on_bad_contradictions_json(
+    db_session: AsyncSession,
+) -> None:
+    """A malformed/unparseable fenced block never flips synthesis_status away
+    from SUCCESS and never erases the take narrative (D-02)."""
+    from app.agents.synthesis import synthesis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = await _build_all_success_state(db_session, plan)
+
+    narrative = "Overall, AAPL presents a compelling investment case."
+    raw_response = narrative + '\n```json\n{"not": "a list", oops\n```'
+
+    with patch(
+        "app.agents.synthesis.call_groq",
+        AsyncMock(return_value=raw_response),
+    ):
+        result = await synthesis_node(state)
+
+    assert result["synthesis_status"] == AgentTaskStatus.SUCCESS.value
+    synthesis_output = result["synthesis_output"]
+    assert synthesis_output["take"] == narrative
+    assert synthesis_output["contradictions"] == []
+
+
+async def test_synthesis_empty_contradictions_is_valid(
+    db_session: AsyncSession,
+) -> None:
+    """An explicit empty fenced array is a valid final result, not a missing
+    key (D-07)."""
+    from app.agents.synthesis import synthesis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = await _build_all_success_state(db_session, plan)
+
+    narrative = "All five specialists are in agreement on the outlook."
+    raw_response = narrative + "\n```json\n[]\n```"
+
+    with patch(
+        "app.agents.synthesis.call_groq",
+        AsyncMock(return_value=raw_response),
+    ):
+        result = await synthesis_node(state)
+
+    assert result["synthesis_status"] == AgentTaskStatus.SUCCESS.value
+    synthesis_output = result["synthesis_output"]
+    assert "contradictions" in synthesis_output
+    assert synthesis_output["contradictions"] == []
+    assert synthesis_output["take"] == narrative
+
+
+async def test_synthesis_populated_contradictions(db_session: AsyncSession) -> None:
+    """A valid fenced item is parsed into synthesis_output["contradictions"]
+    with the correct severity; take excludes the fence text."""
+    from app.agents.synthesis import synthesis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = await _build_all_success_state(db_session, plan)
+
+    narrative = "Fundamentals and Macro disagree on the growth trajectory."
+    fenced = json.dumps(
+        [
+            {
+                "topic": "Revenue growth outlook",
+                "agents": ["FundamentalAnalysis", "MacroSector"],
+                "description": (
+                    "Fundamentals sees accelerating growth while Macro flags "
+                    "sector-wide demand softening."
+                ),
+                "severity": "Medium",
+            }
+        ]
+    )
+    raw_response = f"{narrative}\n```json\n{fenced}\n```"
+
+    with patch(
+        "app.agents.synthesis.call_groq",
+        AsyncMock(return_value=raw_response),
+    ):
+        result = await synthesis_node(state)
+
+    assert result["synthesis_status"] == AgentTaskStatus.SUCCESS.value
+    synthesis_output = result["synthesis_output"]
+    assert synthesis_output["take"] == narrative
+    contradictions = synthesis_output["contradictions"]
+    assert len(contradictions) == 1
+    assert contradictions[0]["topic"] == "Revenue growth outlook"
+    assert contradictions[0]["severity"] == "Medium"
