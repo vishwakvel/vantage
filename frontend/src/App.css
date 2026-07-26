@@ -255,3 +255,45 @@ body {
   padding: 2px var(--space-sm);
   border-radius: 999px;
 }
+
+/* Follow-Up Chat panel (Phase 8 — FollowUpChat.tsx) */
+
+.follow-up-chat {
+  gap: var(--space-md);
+}
+
+.chat-message-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.chat-bubble {
+  background: var(--color-bg);
+  border-radius: 6px;
+  padding: var(--space-md);
+}
+
+.chat-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.chat-input-row .input {
+  flex: 1;
+}
+
+.chat-error {
+  color: var(--color-destructive);
+  margin-top: var(--space-xs);
+}

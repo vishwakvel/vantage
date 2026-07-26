@@ -1,6 +1,7 @@
 import type { ContradictionItem, MemoResponse } from "./api";
 import { AGENT_ORDER, agentLabel, statusBadge } from "./labels";
 import ContradictionsPanel from "./ContradictionsPanel";
+import FollowUpChat from "./FollowUpChat";
 
 /**
  * Shape of a specialist agent's memo-body section — either its SUCCESS
@@ -67,7 +68,13 @@ function sourcesLine(citations: unknown[] | undefined): string | null {
  * badge, an "Overall Take" card, the Contradictions panel, then one card
  * per specialist section in AGENT_ORDER order.
  */
-export default function MemoView({ memo }: { memo: MemoResponse }) {
+export default function MemoView({
+  memo,
+  token,
+}: {
+  memo: MemoResponse;
+  token: string;
+}) {
   const body = (memo.body as MemoBody | null) ?? null;
   const badge = statusBadge(memo.status);
   const synthesis = body?.synthesis;
@@ -129,6 +136,8 @@ export default function MemoView({ memo }: { memo: MemoResponse }) {
           );
         },
       )}
+
+      <FollowUpChat memoId={memo.memo_id} token={token} />
     </div>
   );
 }

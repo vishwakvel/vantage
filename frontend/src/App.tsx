@@ -218,7 +218,7 @@ export default function App() {
           </div>
         )}
 
-        {memo && <MemoView memo={memo} />}
+        {memo && token && <MemoView memo={memo} token={token} />}
       </div>
     </div>
   );

@@ -68,3 +68,19 @@ export const SEVERITY_BADGES: Record<string, StatusBadge> = {
 export function severityBadge(severity: string): StatusBadge {
   return SEVERITY_BADGES[severity] ?? SEVERITY_BADGES.Low;
 }
+
+export const COVERAGE_BADGE: StatusBadge = { color: "#D97706", text: "Exceeds Coverage" };
+
+/**
+ * Maps a chat message's `coverage_exceeded` flag to its badge (or absence of
+ * one) per the UI-SPEC Coverage-Exceeded Badge Color table (D-07, CHAT-04) —
+ * a distinct, explicit amber "caution" signal (same hue as PARTIAL/Medium,
+ * never folded into the answer's prose). Boolean-keyed rather than a
+ * `Record<string,...>` map since `coverage_exceeded` is a bool, not an enum
+ * (Claude's-discretion adaptation of the severityBadge/statusBadge map
+ * convention to the actual data type). Returns `null` when the flag is
+ * false — no badge is rendered for in-coverage answers.
+ */
+export function coverageBadge(coverageExceeded: boolean): StatusBadge | null {
+  return coverageExceeded ? COVERAGE_BADGE : null;
+}

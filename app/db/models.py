@@ -24,6 +24,7 @@ import enum
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -33,7 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 from app.db.base import Base
 
@@ -413,6 +414,50 @@ class AgentOutput(Base):
     completeness = Column(SAEnum(AgentOutputCompleteness), nullable=False)
     missing_fields = Column(JSON, nullable=True)
     output = Column(JSON, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class ChatMessage(Base):
+    """One turn (user question or assistant answer) in a memo's follow-up chat.
+
+    Chat is strictly 1:1 with its ``ResearchMemo`` (D-01) — there is no
+    separate ``ChatSession`` table; ``memo_id`` *is* the session identity.
+    Ownership is enforced via the memo's own ``user_id`` FK, following the
+    same 404-on-not-found-or-not-owned pattern used elsewhere (T-06-07-IDOR).
+    ``coverage_exceeded`` is stored per assistant row so the CHAT-04 signal
+    survives a refetch. No ``updated_at`` — a chat turn is immutable once
+    written (mirrors ``AgentOutput``'s created_at-only shape).
+    """
+
+    __tablename__ = "chat_messages"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    memo_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("research_memos.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role = Column(String(20), nullable=False)  # "user" | "assistant"
+    content = Column(Text, nullable=False)
+    coverage_exceeded = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),

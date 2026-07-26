@@ -36,6 +36,26 @@ export interface MemoResponse {
 }
 
 /**
+ * A single follow-up chat row (CHAT-01/03). Mirrors the backend
+ * `app/api/v1/research.py::ChatMessageResponse` shape exactly.
+ */
+export interface ChatMessage {
+  id: string;
+  role: string;
+  content: string;
+  coverage_exceeded: boolean;
+  created_at: string;
+}
+
+/**
+ * Shape returned by `GET /research/memo/{memoId}/chat` (matches
+ * `app/api/v1/research.py::ChatMessagesResponse`).
+ */
+export interface ChatMessagesResponse {
+  messages: ChatMessage[];
+}
+
+/**
  * POST /auth/login — exchanges email/password for a bearer JWT.
  * Returns the raw access_token string on success; throws on any non-2xx.
  */
@@ -88,4 +108,46 @@ export async function getMemo(
     throw new Error(`Get memo failed with status ${response.status}`);
   }
   return (await response.json()) as MemoResponse;
+}
+
+/**
+ * GET /research/memo/{memoId}/chat — fetches the persisted follow-up chat
+ * history for a memo (CHAT-01), grounded on memo text (no RAG re-query).
+ */
+export async function getChatMessages(
+  memoId: string,
+  token: string,
+): Promise<ChatMessagesResponse> {
+  const response = await fetch(`${API_BASE}/research/memo/${memoId}/chat`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Get chat messages failed with status ${response.status}`);
+  }
+  return (await response.json()) as ChatMessagesResponse;
+}
+
+/**
+ * POST /research/memo/{memoId}/chat — submits a follow-up question and
+ * returns the persisted assistant reply row (CHAT-03), including its
+ * `coverage_exceeded` flag (CHAT-04, D-07).
+ */
+export async function sendChatMessage(
+  memoId: string,
+  question: string,
+  token: string,
+): Promise<ChatMessage> {
+  const response = await fetch(`${API_BASE}/research/memo/${memoId}/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ question }),
+  });
+  if (!response.ok) {
+    throw new Error(`Send chat message failed with status ${response.status}`);
+  }
+  return (await response.json()) as ChatMessage;
 }
