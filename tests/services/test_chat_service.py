@@ -22,9 +22,13 @@ network under plain ``pytest`` (not `-m live`).
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+import app.services.chat_service as chat_service
 from app.services.chat_service import (
     _HISTORY_WINDOW,
     _build_chat_prompt,
@@ -34,6 +38,11 @@ from app.services.chat_service import (
     _split_narrative_and_json,
     answer_chat_turn,
 )
+
+#: Runs the async tests in this module under anyio (asyncio backend, per
+#: conftest.py's anyio_backend fixture) — mirrors
+#: tests/agents/test_synthesis.py's module-level marker.
+pytestmark = pytest.mark.anyio
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -264,3 +273,34 @@ async def test_answer_chat_turn_no_fence_returns_narrative_and_false() -> None:
 
     assert narrative == "A narrative answer with no fence at all."
     assert coverage_exceeded is False
+
+
+# ---------------------------------------------------------------------------
+# Import-boundary source review (D-12 / T-08-BOUNDARY-GROQ)
+# ---------------------------------------------------------------------------
+
+
+def test_chat_service_uses_call_groq_and_never_imports_groq_sdk_directly() -> None:
+    """chat_service.py imports call_groq from app.services.groq_client and
+    never imports the groq SDK's client class or package directly (D-12).
+    The repo's CI import-guard (tests/test_boundaries.py) only walks
+    app.agents/ and app.graph/, not app.services/, so this service-local
+    test IS the enforcement for chat_service.py (T-08-BOUNDARY-GROQ). Only
+    actual import statement lines are checked (not docstrings/comments,
+    which may legitimately reference the forbidden names when documenting
+    the rule)."""
+    assert chat_service.call_groq is not None
+    import_lines = [
+        line.strip()
+        for line in inspect.getsource(chat_service).splitlines()
+        if line.strip().startswith(("import ", "from "))
+    ]
+    # The only permitted groq-related import is `from app.services.groq_client
+    # import call_groq` — a bare `import groq` or `from groq import ...` (the
+    # SDK package itself) is a boundary violation.
+    forbidden = [
+        line
+        for line in import_lines
+        if (line.startswith("import groq") or line.startswith("from groq "))
+    ]
+    assert forbidden == [], f"Forbidden direct groq SDK import(s): {forbidden}"
