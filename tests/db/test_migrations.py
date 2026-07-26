@@ -29,7 +29,8 @@ SYNC_TEST_DB_URL = "postgresql://vantage:vantage@localhost:5433/vantage_test"
 # raw psycopg2 connectivity check and post-migration table inspection below.
 ASYNC_TEST_DB_URL = "postgresql+asyncpg://vantage:vantage@localhost:5433/vantage_test"
 
-# All 9 domain tables created by the initial migration (plan 01-03)
+# The initial 9 domain tables come from migration 001 (plan 01-03); the 10th,
+# chat_messages, is added by revision 002 (plan 08-01, Phase 8 follow-up chat).
 EXPECTED_TABLES = frozenset(
     {
         "users",
@@ -41,6 +42,7 @@ EXPECTED_TABLES = frozenset(
         "research_memos",
         "agent_tasks",
         "agent_outputs",
+        "chat_messages",
     }
 )
 
