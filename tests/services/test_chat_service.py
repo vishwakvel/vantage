@@ -9,6 +9,10 @@ Coverage (CHAT-02, CHAT-04):
     sections + synthesis.take + contradictions), None-guarded per section.
   - test_serialize_history_*: D-11 last-8-message sliding window,
     oldest-first, role-labeled.
+  - test_build_chat_prompt_*: assembly order (framing, memo, history,
+    question, coverage instruction last).
+  - test_answer_chat_turn_*: single rate-limited ``call_groq`` call ->
+    ``(narrative, coverage_exceeded)``, never raises.
 
 Mocks only at the SERVICE boundary — ``app.services.chat_service.call_groq``
 — never the groq SDK directly (mirrors ``tests/agents/test_synthesis.py``'s
@@ -19,13 +23,16 @@ network under plain ``pytest`` (not `-m live`).
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 from app.services.chat_service import (
     _HISTORY_WINDOW,
+    _build_chat_prompt,
     _parse_coverage_flag,
     _serialize_history,
     _serialize_memo,
     _split_narrative_and_json,
+    answer_chat_turn,
 )
 
 # ---------------------------------------------------------------------------
@@ -165,3 +172,95 @@ def test_serialize_history_caps_to_last_eight_oldest_first() -> None:
     assert len(lines) == _HISTORY_WINDOW
     assert lines[0] == "user: message 4"
     assert lines[-1] == "assistant: message 11"
+
+
+# ---------------------------------------------------------------------------
+# _build_chat_prompt
+# ---------------------------------------------------------------------------
+
+
+def test_build_chat_prompt_assembly_order() -> None:
+    body = _full_memo_body()
+    history = [_FakeMessage("user", "What about margins?")]
+    prompt = _build_chat_prompt(body, history, "What is the growth outlook?")
+
+    framing_idx = prompt.find("DATA")
+    memo_idx = prompt.find("Revenue grew 12% YoY.")
+    history_idx = prompt.find("What about margins?")
+    question_idx = prompt.find("What is the growth outlook?")
+    coverage_idx = prompt.find("coverage_exceeded")
+
+    assert -1 < framing_idx < memo_idx < history_idx < question_idx < coverage_idx
+
+
+# ---------------------------------------------------------------------------
+# answer_chat_turn
+# ---------------------------------------------------------------------------
+
+
+async def test_answer_chat_turn_returns_narrative_and_false_flag() -> None:
+    body = _full_memo_body()
+    with patch(
+        "app.services.chat_service.call_groq",
+        AsyncMock(
+            return_value='Grounded answer.\n```json\n{"coverage_exceeded": false}\n```'
+        ),
+    ) as mock_call:
+        narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
+
+    assert narrative == "Grounded answer."
+    assert coverage_exceeded is False
+    mock_call.assert_awaited_once()
+    assert mock_call.await_args.kwargs.get("max_tokens") == 1024
+
+
+async def test_answer_chat_turn_returns_true_flag() -> None:
+    body = _full_memo_body()
+    with patch(
+        "app.services.chat_service.call_groq",
+        AsyncMock(
+            return_value='Answer here.\n```json\n{"coverage_exceeded": true}\n```'
+        ),
+    ):
+        narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
+
+    assert narrative == "Answer here."
+    assert coverage_exceeded is True
+
+
+async def test_answer_chat_turn_calls_call_groq_exactly_once_with_max_tokens() -> None:
+    body = _full_memo_body()
+    mock_call = AsyncMock(return_value='Answer.\n```json\n{"coverage_exceeded": false}\n```')
+    with patch("app.services.chat_service.call_groq", mock_call):
+        await answer_chat_turn(body, [], "A question?")
+
+    mock_call.assert_awaited_once()
+    _, kwargs = mock_call.await_args
+    assert kwargs["max_tokens"] == 1024
+
+
+async def test_answer_chat_turn_prompt_contains_all_required_parts() -> None:
+    body = _full_memo_body()
+    history = [_FakeMessage("user", "Earlier question text")]
+    mock_call = AsyncMock(return_value='Answer.\n```json\n{"coverage_exceeded": false}\n```')
+    with patch("app.services.chat_service.call_groq", mock_call):
+        await answer_chat_turn(body, history, "New question text")
+
+    prompt = mock_call.await_args.args[0]
+    assert "DATA" in prompt
+    assert "Revenue grew 12% YoY." in prompt
+    assert "Earlier question text" in prompt
+    assert "New question text" in prompt
+    assert "coverage_exceeded" in prompt
+
+
+async def test_answer_chat_turn_no_fence_returns_narrative_and_false() -> None:
+    body = _full_memo_body()
+    with patch(
+        "app.services.chat_service.call_groq",
+        AsyncMock(return_value="A narrative answer with no fence at all."),
+    ):
+        narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
+
+    assert narrative == "A narrative answer with no fence at all."
+    assert coverage_exceeded is False
