@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.db.models import ChatMessage, ResearchMemoStatus, ResearchPlan, User
+from app.db.models import ChatMessage, ResearchMemoStatus, User
 from tests.api.test_memo_routes import _seed_memo
 from tests.api.test_research_api import (
     RESEARCH_URL,

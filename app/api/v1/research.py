@@ -86,6 +86,7 @@ import app.services.ingestion_service as ingestion_service
 import app.services.ticker_resolver as ticker_resolver
 from app.core.dependencies import get_current_user, get_session
 from app.db.models import (
+    ChatMessage,
     ResearchMemo,
     ResearchMemoStatus,
     ResearchPlan,
@@ -93,6 +94,7 @@ from app.db.models import (
     ResearchRequest,
     User,
 )
+from app.services.chat_service import answer_chat_turn
 from app.workers.tasks import run_research_task
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -114,6 +116,10 @@ _TICKER_RE: re.Pattern[str] = re.compile(r"^[A-Z0-9]{1,10}$")
 #: Mirrors ingest.py's _PDF_ENDPOINT_MAX_BYTES — enforced before the full
 #: body is buffered in memory (T-03-03 DoS mitigation, CR-03).
 _RESEARCH_DOC_MAX_BYTES: int = 50 * 1024 * 1024  # 50 MB
+
+#: T-08-03-DOS: caps the untrusted chat question before it reaches the
+#: chat_service prompt (mirrors _MAX_QUERY_LENGTH's T-03-06 precedent).
+_MAX_QUESTION_LENGTH: int = 2000
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +256,51 @@ class MemoResponse(BaseModel):
     status: str
     ticker: str | None
     body: dict | None
+
+
+class ChatMessageResponse(BaseModel):
+    """One turn (user or assistant) in a memo's follow-up chat (CHAT-01/03/04)."""
+
+    id: str
+    role: str
+    content: str
+    coverage_exceeded: bool
+    created_at: str
+
+
+class ChatMessagesResponse(BaseModel):
+    """Returned by GET /research/memo/{memo_id}/chat (CHAT-03)."""
+
+    messages: list[ChatMessageResponse]
+
+
+class ChatTurnRequest(BaseModel):
+    """Request body for POST /research/memo/{memo_id}/chat.
+
+    Attributes:
+        question: The user's follow-up question. Validated non-empty and
+                   length-capped at ``_MAX_QUESTION_LENGTH`` characters
+                   (T-08-03-DOS).
+    """
+
+    question: str
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, v: str) -> str:
+        """Reject empty/whitespace-only questions and oversized payloads.
+
+        Raises:
+            ValueError: If ``question`` is empty/whitespace, or exceeds
+                        ``_MAX_QUESTION_LENGTH`` characters.
+        """
+        if not v.strip():
+            raise ValueError("question must not be empty")
+        if len(v) > _MAX_QUESTION_LENGTH:
+            raise ValueError(
+                f"question exceeds {_MAX_QUESTION_LENGTH} character limit"
+            )
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +679,7 @@ async def get_memo(
 
 
 @router.get("/{plan_id}/memo", response_model=MemoResponse)
+
 async def get_latest_memo_for_plan(
     plan_id: str,
     user: User = Depends(get_current_user),
@@ -681,4 +733,165 @@ async def get_latest_memo_for_plan(
         status=memo.status.value,
         ticker=memo.ticker,
         body=memo.body,
+    )
+
+
+@router.get("/memo/{memo_id}/chat", response_model=ChatMessagesResponse)
+async def list_chat_messages(
+    memo_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ChatMessagesResponse:
+    """List the full ordered chat history for a memo, owner-only (CHAT-03).
+
+    Authentication is REQUIRED (T-08-03-AUTHZ) — an unauthenticated request
+    never reaches the handler body (401/403).
+
+    Ownership is checked against ``ResearchMemo.user_id == user.id``
+    (T-08-03-IDOR, mirrors ``get_memo``) — a non-owned or non-existent
+    ``memo_id`` returns 404 in both cases, never 403 (no existence leak).
+
+    Returns an empty ``messages`` list when the memo has no chat rows yet
+    (D-01 — no eager session row is ever created), never a 404 for that case.
+
+    Args:
+        memo_id: ResearchMemo UUID from the URL path.
+        user:    Authenticated user resolved from the Bearer JWT
+                 (T-08-03-AUTHZ); the ONLY source of user identity.
+        session: Injected async DB session.
+
+    Returns:
+        ``ChatMessagesResponse`` with the memo's chat rows in ``created_at``
+        ascending order.
+
+    Raises:
+        HTTPException: 404 if the memo does not exist or is not owned by
+                        ``user``.
+    """
+    memo_result = await session.execute(
+        select(ResearchMemo).where(
+            ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id
+        )
+    )
+    memo = memo_result.scalar_one_or_none()
+    if memo is None:
+        raise HTTPException(status_code=404, detail="Memo not found")
+
+    messages_result = await session.execute(
+        select(ChatMessage)
+        .where(ChatMessage.memo_id == memo.id)
+        .order_by(ChatMessage.created_at.asc())
+    )
+    rows = messages_result.scalars().all()
+
+    return ChatMessagesResponse(
+        messages=[
+            ChatMessageResponse(
+                id=str(row.id),
+                role=row.role,
+                content=row.content,
+                coverage_exceeded=row.coverage_exceeded,
+                created_at=row.created_at.isoformat(),
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.post("/memo/{memo_id}/chat", response_model=ChatMessageResponse)
+async def post_chat_message(
+    memo_id: str,
+    body: ChatTurnRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ChatMessageResponse:
+    """Send a follow-up chat turn on a terminal, owned memo (CHAT-01/02/04).
+
+    Authentication is REQUIRED (T-08-03-AUTHZ) — an unauthenticated request
+    never reaches the handler body (401/403).
+
+    Ownership is checked against ``ResearchMemo.user_id == user.id``
+    (T-08-03-IDOR, mirrors ``get_memo``) — a non-owned or non-existent
+    ``memo_id`` returns 404 in both cases, never 403.
+
+    Terminal gate (T-08-03-STATUSGATE, D-06): rejected with 400 unless the
+    memo's status is COMPLETE or PARTIAL — before any history load or
+    service call, so a PENDING/RUNNING memo never reaches
+    ``answer_chat_turn`` and never gets a ChatMessage row.
+
+    Loads the prior history (all rows created before this turn), calls
+    ``chat_service.answer_chat_turn`` for the grounded answer + coverage
+    flag (CHAT-02 — no RAG re-query anywhere in this route), then persists
+    the user turn first with its own commit and the assistant turn second
+    with its own commit (D-01 lazy first write; two separate commits so
+    Postgres's transaction-fixed ``now()`` orders user-before-assistant,
+    mirrors ``test_memo_routes.py``'s ``_seed_memo`` note). ``user_id`` on
+    both persisted rows is sourced exclusively from ``get_current_user``
+    (T-08-03-AUTHZ), never from the request body.
+
+    Args:
+        memo_id: ResearchMemo UUID from the URL path.
+        body:    Validated request body containing the new question.
+        user:    Authenticated user resolved from the Bearer JWT
+                 (T-08-03-AUTHZ); the ONLY source of user identity.
+        session: Injected async DB session.
+
+    Returns:
+        ``ChatMessageResponse`` for the newly persisted assistant turn,
+        including its ``coverage_exceeded`` flag (CHAT-04).
+
+    Raises:
+        HTTPException: 404 if the memo does not exist or is not owned by
+                        ``user``; 400 if the memo is not terminal
+                        (COMPLETE/PARTIAL).
+    """
+    memo_result = await session.execute(
+        select(ResearchMemo).where(
+            ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id
+        )
+    )
+    memo = memo_result.scalar_one_or_none()
+    if memo is None:
+        raise HTTPException(status_code=404, detail="Memo not found")
+
+    if memo.status not in (ResearchMemoStatus.COMPLETE, ResearchMemoStatus.PARTIAL):
+        raise HTTPException(status_code=400, detail="Memo is not ready for chat")
+
+    history_result = await session.execute(
+        select(ChatMessage)
+        .where(ChatMessage.memo_id == memo.id)
+        .order_by(ChatMessage.created_at.asc())
+    )
+    history = list(history_result.scalars().all())
+
+    narrative, coverage_exceeded = await answer_chat_turn(
+        memo.body, history, body.question
+    )
+
+    user_row = ChatMessage(
+        memo_id=memo.id,
+        user_id=user.id,
+        role="user",
+        content=body.question,
+    )
+    session.add(user_row)
+    await session.commit()
+
+    assistant_row = ChatMessage(
+        memo_id=memo.id,
+        user_id=user.id,
+        role="assistant",
+        content=narrative,
+        coverage_exceeded=coverage_exceeded,
+    )
+    session.add(assistant_row)
+    await session.commit()
+    await session.refresh(assistant_row)
+
+    return ChatMessageResponse(
+        id=str(assistant_row.id),
+        role=assistant_row.role,
+        content=assistant_row.content,
+        coverage_exceeded=assistant_row.coverage_exceeded,
+        created_at=assistant_row.created_at.isoformat(),
     )
