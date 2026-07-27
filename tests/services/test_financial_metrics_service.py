@@ -89,39 +89,40 @@ async def test_reupsert_with_changed_value_leaves_single_row(
 async def test_reupsert_advances_updated_at_keeps_created_at(
     db_session: AsyncSession,
 ) -> None:
+    """Two separate research runs are two separate committed transactions in
+    production — PostgreSQL's ``now()`` is fixed for the lifetime of a single
+    transaction, so this test commits between runs to model that (a same-
+    transaction double-call, which never happens in the real call path,
+    would see the same ``now()`` for both upserts)."""
     rows_v1 = [{"metric_name": "revenue", "period": "2024-03-31", "value": 100.0}]
     rows_v2 = [{"metric_name": "revenue", "period": "2024-03-31", "value": 200.0}]
 
+    # Column-only selects (not the ORM entity) deliberately avoid
+    # SQLAlchemy's identity map: with expire_on_commit=False, re-selecting
+    # the same mapped entity by PK returns the already-loaded in-memory
+    # object rather than re-reading the row, which would make this
+    # assertion pass or fail on stale cached values instead of the real ones.
+    timestamp_cols = select(FinancialMetric.created_at, FinancialMetric.updated_at).where(
+        FinancialMetric.ticker == "TSCO",
+        FinancialMetric.metric_name == "revenue",
+        FinancialMetric.period == "2024-03-31",
+    )
+
     with patch(_PATCH_TARGET, AsyncMock(return_value=rows_v1)):
         await persist_quarterly_metrics("TSCO", db_session)
+    await db_session.commit()
 
-    row_result = await db_session.execute(
-        select(FinancialMetric).where(
-            FinancialMetric.ticker == "TSCO",
-            FinancialMetric.metric_name == "revenue",
-            FinancialMetric.period == "2024-03-31",
-        )
-    )
-    row_v1 = row_result.scalar_one()
-    created_at_v1 = row_v1.created_at
-    updated_at_v1 = row_v1.updated_at
+    created_at_v1, updated_at_v1 = (await db_session.execute(timestamp_cols)).one()
 
     await asyncio.sleep(0.05)
 
     with patch(_PATCH_TARGET, AsyncMock(return_value=rows_v2)):
         await persist_quarterly_metrics("TSCO", db_session)
 
-    row_result = await db_session.execute(
-        select(FinancialMetric).where(
-            FinancialMetric.ticker == "TSCO",
-            FinancialMetric.metric_name == "revenue",
-            FinancialMetric.period == "2024-03-31",
-        )
-    )
-    row_v2 = row_result.scalar_one()
+    created_at_v2, updated_at_v2 = (await db_session.execute(timestamp_cols)).one()
 
-    assert row_v2.created_at == created_at_v1
-    assert row_v2.updated_at > updated_at_v1
+    assert created_at_v2 == created_at_v1
+    assert updated_at_v2 > updated_at_v1
 
 
 async def test_returned_mapping_sorted_ascending_by_period(
