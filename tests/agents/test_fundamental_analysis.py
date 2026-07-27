@@ -18,11 +18,34 @@ Coverage (MEMO-02, MEMO-03, EXEC-02):
   - test_one_agenttask_and_one_agentoutput_persisted: after a run, exactly
     one AgentTask (agent_type "FundamentalAnalysis") and one AgentOutput
     exist for the plan.
+  - test_anomalies_flow_through_to_output: detect_anomalies-produced
+    anomalies land in fundamentals_output["anomalies"] and in the persisted
+    AgentOutput.output, each carrying metric_name/period/value/severity/
+    description (METRIC-02).
+  - test_skipped_metrics_sets_insufficient_history_note: skipped_metrics
+    sets metrics_note to _REASONS["insufficient_history"] (D-05).
+  - test_skipped_metrics_coexist_with_anomalies: the note is not
+    all-or-nothing — anomalies and the note can both be present.
+  - test_metrics_persistence_failure_leaves_status_and_completeness_unchanged:
+    persist_quarterly_metrics raising never changes AgentTask.status or
+    AgentOutputCompleteness, sets metrics_note to
+    _REASONS["metrics_unavailable"], never raises (R-E, D-07).
+  - test_anomaly_detection_failure_leaves_status_and_completeness_unchanged:
+    detect_anomalies raising behaves identically.
+  - test_empty_metrics_series_sets_metrics_unavailable_note: an empty
+    series mapping sets metrics_note to _REASONS["metrics_unavailable"].
+  - test_zero_chunk_failed_path_has_anomalies_and_metrics_note_keys: the
+    zero-chunk FAILED path still writes an anomalies:[] / metrics_note:None
+    shape (_fallback_output consistency).
+  - test_detect_anomalies_invoked_via_asyncio_to_thread: detect_anomalies
+    is awaited through asyncio.to_thread, never called inline.
 
 Mocks only at the SERVICE boundary — ``app.agents.fundamental_analysis.call_groq``
 and ``app.agents.fundamental_analysis.hybrid_retrieve`` — never the groq SDK or
 ChromaDB directly (mirrors ``tests/services/test_ticker_resolver.py``'s
-boundary-mock convention).
+boundary-mock convention). An autouse fixture additionally patches
+``persist_quarterly_metrics`` for every test in this module (see below) so the
+node's new metrics call can never reach a real external API from a unit test.
 """
 
 import uuid
@@ -47,10 +70,29 @@ from app.ingestion.section_constants import (
     SECTION_NOTES,
     SECTION_RISK_FACTORS,
 )
+from app.services.anomaly_detection import AnomalyReport
 
 pytestmark = pytest.mark.anyio
 
 _ALL_TARGET_SECTIONS = (SECTION_MDA, SECTION_FINANCIALS, SECTION_NOTES, SECTION_RISK_FACTORS)
+
+
+@pytest.fixture(autouse=True)
+def _patch_persist_quarterly_metrics():
+    """Patch ``persist_quarterly_metrics`` for every test in this module.
+
+    The node now calls ``persist_quarterly_metrics`` (and therefore
+    yfinance) on every reachable success-path branch. A unit test must
+    never reach a real external API, so this default patch keeps the
+    existing suite hermetic and offline by returning an empty series
+    mapping. Individual tests that need specific series/failure behaviour
+    override this patch locally inside their own ``with`` block.
+    """
+    with patch(
+        "app.agents.fundamental_analysis.persist_quarterly_metrics",
+        AsyncMock(return_value={}),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +439,397 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         )
     ).scalars().all()
     assert len(output_rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# Metric persistence + anomaly detection (METRIC-01/02/03, 09-06-PLAN.md)
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_SERIES = {
+    "revenue": [
+        ("2025Q1", 1_000_000.0),
+        ("2025Q2", 1_100_000.0),
+        ("2025Q3", 1_050_000.0),
+        ("2025Q4", 100_000_000.0),
+    ]
+}
+
+_SAMPLE_ANOMALY = {
+    "metric_name": "revenue",
+    "period": "2025Q4",
+    "value": 100_000_000.0,
+    "severity": "High",
+    "description": (
+        "Revenue climbed to $100.00M in 2025Q4, the highest of the 4 "
+        "quarters on record (median $1.05M)."
+    ),
+}
+
+
+async def test_anomalies_flow_through_to_output(db_session: AsyncSession) -> None:
+    """Anomalies from detect_anomalies land in fundamentals_output['anomalies']
+    and in the persisted AgentOutput.output, each carrying the expected keys."""
+    from app.agents.fundamental_analysis import fundamental_analysis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    chunks = _all_section_chunks()
+    state = await _build_state(db_session, plan, user)
+    report = AnomalyReport(anomalies=[_SAMPLE_ANOMALY], skipped_metrics=[])
+
+    with (
+        patch(
+            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
+        ),
+        patch(
+            "app.agents.fundamental_analysis.call_groq",
+            AsyncMock(return_value="A narrative about AAPL's fundamentals."),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            AsyncMock(return_value=_SAMPLE_SERIES),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.detect_anomalies",
+            return_value=report,
+        ),
+    ):
+        result = await fundamental_analysis_node(state)
+
+    assert result["fundamentals_output"]["anomalies"] == [_SAMPLE_ANOMALY]
+    assert result["fundamentals_output"]["metrics_note"] is None
+
+    task_row = (
+        await db_session.execute(
+            select(AgentTask).where(AgentTask.plan_id == plan.id)
+        )
+    ).scalar_one()
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    assert output_row.output["anomalies"] == [_SAMPLE_ANOMALY]
+    for key in ("metric_name", "period", "value", "severity", "description"):
+        assert key in output_row.output["anomalies"][0]
+
+
+# ---------------------------------------------------------------------------
+
+
+async def test_skipped_metrics_sets_insufficient_history_note(
+    db_session: AsyncSession,
+) -> None:
+    """skipped_metrics sets metrics_note to _REASONS["insufficient_history"] (D-05)."""
+    from app.agents.fundamental_analysis import (
+        _REASONS,
+        fundamental_analysis_node,
+    )
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    chunks = _all_section_chunks()
+    state = await _build_state(db_session, plan, user)
+    report = AnomalyReport(anomalies=[], skipped_metrics=["debt_to_equity"])
+
+    with (
+        patch(
+            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
+        ),
+        patch(
+            "app.agents.fundamental_analysis.call_groq",
+            AsyncMock(return_value="narrative"),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            AsyncMock(return_value=_SAMPLE_SERIES),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.detect_anomalies",
+            return_value=report,
+        ),
+    ):
+        result = await fundamental_analysis_node(state)
+
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
+        "insufficient_history"
+    ]
+    assert result["fundamentals_output"]["anomalies"] == []
+
+
+# ---------------------------------------------------------------------------
+
+
+async def test_skipped_metrics_coexist_with_anomalies(
+    db_session: AsyncSession,
+) -> None:
+    """The note is not all-or-nothing: skipped metrics and real anomalies
+    can both be returned from the same run."""
+    from app.agents.fundamental_analysis import (
+        _REASONS,
+        fundamental_analysis_node,
+    )
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    chunks = _all_section_chunks()
+    state = await _build_state(db_session, plan, user)
+    report = AnomalyReport(
+        anomalies=[_SAMPLE_ANOMALY], skipped_metrics=["debt_to_equity"]
+    )
+
+    with (
+        patch(
+            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
+        ),
+        patch(
+            "app.agents.fundamental_analysis.call_groq",
+            AsyncMock(return_value="narrative"),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            AsyncMock(return_value=_SAMPLE_SERIES),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.detect_anomalies",
+            return_value=report,
+        ),
+    ):
+        result = await fundamental_analysis_node(state)
+
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
+        "insufficient_history"
+    ]
+    assert result["fundamentals_output"]["anomalies"] == [_SAMPLE_ANOMALY]
+
+
+# ---------------------------------------------------------------------------
+
+
+async def test_metrics_persistence_failure_leaves_status_and_completeness_unchanged(
+    db_session: AsyncSession,
+) -> None:
+    """R-E/D-07: persist_quarterly_metrics raising must not change
+    AgentTask.status or AgentOutputCompleteness relative to the same
+    scenario without the failure, and the node must not raise."""
+    from app.agents.fundamental_analysis import (
+        _REASONS,
+        fundamental_analysis_node,
+    )
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    chunks = _all_section_chunks()  # SUCCESS/FULL scenario
+    state = await _build_state(db_session, plan, user)
+
+    with (
+        patch(
+            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
+        ),
+        patch(
+            "app.agents.fundamental_analysis.call_groq",
+            AsyncMock(return_value="narrative"),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            AsyncMock(side_effect=RuntimeError("yfinance down")),
+        ),
+    ):
+        result = await fundamental_analysis_node(state)
+
+    assert result["fundamentals_status"] == AgentTaskStatus.SUCCESS.value
+    assert result["fundamentals_output"]["anomalies"] == []
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
+        "metrics_unavailable"
+    ]
+
+    task_row = (
+        await db_session.execute(
+            select(AgentTask).where(AgentTask.plan_id == plan.id)
+        )
+    ).scalar_one()
+    assert task_row.status == AgentTaskStatus.SUCCESS
+
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    assert output_row.completeness == AgentOutputCompleteness.FULL
+
+
+# ---------------------------------------------------------------------------
+
+
+async def test_anomaly_detection_failure_leaves_status_and_completeness_unchanged(
+    db_session: AsyncSession,
+) -> None:
+    """detect_anomalies raising behaves identically to a persistence failure."""
+    from app.agents.fundamental_analysis import (
+        _REASONS,
+        fundamental_analysis_node,
+    )
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    chunks = _all_section_chunks()  # SUCCESS/FULL scenario
+    state = await _build_state(db_session, plan, user)
+
+    with (
+        patch(
+            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
+        ),
+        patch(
+            "app.agents.fundamental_analysis.call_groq",
+            AsyncMock(return_value="narrative"),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            AsyncMock(return_value=_SAMPLE_SERIES),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.detect_anomalies",
+            side_effect=RuntimeError("sklearn boom"),
+        ),
+    ):
+        result = await fundamental_analysis_node(state)
+
+    assert result["fundamentals_status"] == AgentTaskStatus.SUCCESS.value
+    assert result["fundamentals_output"]["anomalies"] == []
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
+        "metrics_unavailable"
+    ]
+
+    task_row = (
+        await db_session.execute(
+            select(AgentTask).where(AgentTask.plan_id == plan.id)
+        )
+    ).scalar_one()
+    assert task_row.status == AgentTaskStatus.SUCCESS
+
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    assert output_row.completeness == AgentOutputCompleteness.FULL
+
+
+# ---------------------------------------------------------------------------
+
+
+async def test_empty_metrics_series_sets_metrics_unavailable_note(
+    db_session: AsyncSession,
+) -> None:
+    """An empty series mapping sets metrics_note to
+    _REASONS["metrics_unavailable"] and anomalies to []."""
+    from app.agents.fundamental_analysis import (
+        _REASONS,
+        fundamental_analysis_node,
+    )
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    chunks = _all_section_chunks()
+    state = await _build_state(db_session, plan, user)
+
+    with (
+        patch(
+            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
+        ),
+        patch(
+            "app.agents.fundamental_analysis.call_groq",
+            AsyncMock(return_value="narrative"),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            AsyncMock(return_value={}),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.detect_anomalies"
+        ) as mock_detect,
+    ):
+        result = await fundamental_analysis_node(state)
+
+    assert result["fundamentals_output"]["anomalies"] == []
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
+        "metrics_unavailable"
+    ]
+    mock_detect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+
+
+async def test_zero_chunk_failed_path_has_anomalies_and_metrics_note_keys(
+    db_session: AsyncSession,
+) -> None:
+    """The zero-chunk FAILED path still writes an AgentOutput.output
+    containing anomalies:[] and metrics_note:None (_fallback_output shape
+    consistency)."""
+    from app.agents.fundamental_analysis import fundamental_analysis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = await _build_state(db_session, plan, user)
+
+    with patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=[]):
+        result = await fundamental_analysis_node(state)
+
+    assert result["fundamentals_output"] is None
+
+    task_row = (
+        await db_session.execute(
+            select(AgentTask).where(AgentTask.plan_id == plan.id)
+        )
+    ).scalar_one()
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    assert output_row.output["anomalies"] == []
+    assert output_row.output["metrics_note"] is None
+
+
+# ---------------------------------------------------------------------------
+
+
+async def test_detect_anomalies_invoked_via_asyncio_to_thread(
+    db_session: AsyncSession,
+) -> None:
+    """detect_anomalies is awaited through asyncio.to_thread, never called
+    inline in the coroutine (T-09-DOS-LOOP)."""
+    from app.agents.fundamental_analysis import fundamental_analysis_node
+
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    chunks = _all_section_chunks()
+    state = await _build_state(db_session, plan, user)
+    report = AnomalyReport(anomalies=[], skipped_metrics=[])
+
+    with (
+        patch(
+            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
+        ),
+        patch(
+            "app.agents.fundamental_analysis.call_groq",
+            AsyncMock(return_value="narrative"),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            AsyncMock(return_value=_SAMPLE_SERIES),
+        ),
+        patch(
+            "app.agents.fundamental_analysis.detect_anomalies"
+        ) as mock_detect,
+        patch(
+            "app.agents.fundamental_analysis.asyncio.to_thread",
+            AsyncMock(return_value=report),
+        ) as mock_to_thread,
+    ):
+        await fundamental_analysis_node(state)
+
+    mock_to_thread.assert_awaited_once_with(mock_detect, _SAMPLE_SERIES)
+    mock_detect.assert_not_called()
