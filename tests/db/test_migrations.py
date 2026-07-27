@@ -1,4 +1,4 @@
-"""Migration smoke test — verifies alembic upgrade head creates all 9 domain tables.
+"""Migration smoke test — verifies alembic upgrade head creates all domain tables.
 
 Skipped automatically when test-postgres is unavailable (e.g. in CI without
 docker-compose.test.yml or on developer machines that haven't started the
@@ -30,7 +30,9 @@ SYNC_TEST_DB_URL = "postgresql://vantage:vantage@localhost:5433/vantage_test"
 ASYNC_TEST_DB_URL = "postgresql+asyncpg://vantage:vantage@localhost:5433/vantage_test"
 
 # The initial 9 domain tables come from migration 001 (plan 01-03); the 10th,
-# chat_messages, is added by revision 002 (plan 08-01, Phase 8 follow-up chat).
+# chat_messages, is added by revision 002 (plan 08-01, Phase 8 follow-up chat);
+# the 11th, financial_metrics, is added by revision 003 (plan 09-02, Phase 9
+# financial metrics & anomaly detection).
 EXPECTED_TABLES = frozenset(
     {
         "users",
@@ -43,6 +45,7 @@ EXPECTED_TABLES = frozenset(
         "agent_tasks",
         "agent_outputs",
         "chat_messages",
+        "financial_metrics",
     }
 )
 
@@ -75,8 +78,8 @@ def _test_db_available() -> bool:
         return False  # Container not running — skip gracefully
 
 
-def test_upgrade_creates_all_nine_tables() -> None:
-    """alembic upgrade head creates all 9 domain tables on a fresh schema.
+def test_upgrade_creates_all_domain_tables() -> None:
+    """alembic upgrade head creates all 11 domain tables on a fresh schema.
 
     Skipped when test-postgres is unavailable.
     """
