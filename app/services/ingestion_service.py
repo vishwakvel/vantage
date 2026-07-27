@@ -48,11 +48,11 @@ from typing import Any
 
 import fitz  # PyMuPDF — lazy at call time; module-level import enables monkeypatching in tests
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Company, Document, DocumentChunk, DocumentSourceType, DocumentVisibility
+from app.db.models import Document, DocumentChunk, DocumentSourceType, DocumentVisibility
 from app.ingestion.chunker import section_aware_chunk
+from app.services.company_service import ensure_company_exists
 from app.services.edgar_client import edgar_client
 from app.services.vector_store import (
     canonical_exists,
@@ -204,25 +204,6 @@ def compute_canonical_id(ticker: str, form_type: str, period_of_report: str) -> 
     """
     raw = f"{ticker.upper()}:{form_type}:{period_of_report}"
     return hashlib.sha256(raw.encode()).hexdigest()
-
-
-async def _ensure_company_exists(ticker: str, session: AsyncSession) -> None:
-    """Upsert a minimal ``Company`` row for *ticker* if one doesn't exist.
-
-    ``Document.ticker`` is a foreign key into ``companies`` (Company entity
-    is the day-one source of truth for every ticker reference, per Phase 1).
-    Ticker resolution only *matches against* a company name — it never
-    persists a row — so a brand-new ticker with no prior research has no
-    ``Company`` row yet. Without this, the first ``Document`` insert for that
-    ticker raises a ``ForeignKeyViolationError``. Uses ``ON CONFLICT DO
-    NOTHING`` so concurrent ingestion calls for the same new ticker don't race.
-    """
-    stmt = (
-        pg_insert(Company)
-        .values(ticker=ticker)
-        .on_conflict_do_nothing(index_elements=["ticker"])
-    )
-    await session.execute(stmt)
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +405,7 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
     result = IngestionResult(ticker=ticker)
 
     # Every Document.ticker FK requires a Company row to already exist.
-    await _ensure_company_exists(ticker, session)
+    await ensure_company_exists(ticker, session)
 
     # --- Pre-flight: check for existing EDGAR docs in PostgreSQL ---
     # If all canonical_ids for this ticker are already in ChromaDB, skip EDGAR
@@ -577,7 +558,7 @@ async def ingest_pdf(
     result = IngestionResult(ticker=ticker)
 
     # Every Document.ticker FK requires a Company row to already exist.
-    await _ensure_company_exists(ticker, session)
+    await ensure_company_exists(ticker, session)
 
     # --- DoS mitigation: 50 MB cap BEFORE parse (T-02-03) ---
     if len(file_bytes) > _MAX_PDF_BYTES:
