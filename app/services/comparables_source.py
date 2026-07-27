@@ -16,11 +16,14 @@ fabricating peers; callers (the ComparableCompanies agent, Plan 08) MUST
 treat an empty peer list as a genuine "no comparables available" signal and
 degrade to PARTIAL, per the phase's fallback policy.
 
-This is the ONLY module in the codebase that imports yfinance (services-
-boundary rule) — agents must import the module-level ``comparables_source``
-singleton and never import yfinance directly (T-05-COMP-INPUT boundary,
-enforced by grep in this plan's acceptance criteria / tests/test_boundaries.py
-convention).
+yfinance imports are confined to ``app/services/`` (services-boundary rule).
+Two modules hold them: this one, for cross-sectional peer data, and
+``app/services/financial_metrics_source.py``, for per-ticker quarterly
+time-series data (Phase 9, METRIC-01). Agents and graph modules import the
+respective module-level singletons — ``comparables_source`` or
+``financial_metrics_source`` — and never import yfinance directly
+(T-05-COMP-INPUT boundary). The rule is verified by
+``tests/test_boundaries.py::test_yfinance_imports_confined_to_services``.
 
 yfinance is synchronous/blocking under the hood. Every yfinance call is
 offloaded to a worker thread via ``asyncio.to_thread`` so these async

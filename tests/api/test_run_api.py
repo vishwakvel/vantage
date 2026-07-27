@@ -201,6 +201,15 @@ def _patch_all_agents(
             "app.agents.fundamental_analysis.call_groq",
             new=AsyncMock(return_value=_FUNDAMENTALS_NARRATIVE),
         ),
+        # METRIC-01/02/03 (09-06): the node now unconditionally calls
+        # persist_quarterly_metrics on its success path, which would
+        # otherwise reach real yfinance from this real-graph integration
+        # test. Empty series keeps the metrics_note/anomalies contract
+        # exercised (metrics_unavailable, []) without asserting on it here.
+        patch(
+            "app.agents.fundamental_analysis.persist_quarterly_metrics",
+            new=AsyncMock(return_value={}),
+        ),
         # SentimentNLP — own session via the real session_scope().
         patch(
             "app.agents.sentiment_nlp.news_client.get_recent_articles",

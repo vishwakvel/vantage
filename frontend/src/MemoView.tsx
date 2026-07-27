@@ -1,6 +1,7 @@
-import type { ContradictionItem, MemoResponse } from "./api";
+import type { AnomalyItem, ContradictionItem, MemoResponse } from "./api";
 import { AGENT_ORDER, agentLabel, statusBadge } from "./labels";
 import ContradictionsPanel from "./ContradictionsPanel";
+import AnomaliesPanel from "./AnomaliesPanel";
 import FollowUpChat from "./FollowUpChat";
 
 /**
@@ -13,6 +14,8 @@ interface SpecialistSection {
   narrative: string | null;
   citations?: unknown[];
   reason?: string | null;
+  anomalies?: AnomalyItem[];
+  metrics_note?: string | null;
 }
 
 /**
@@ -131,6 +134,12 @@ export default function MemoView({
                     {section?.reason ?? DEFAULT_UNAVAILABLE_REASON}
                   </p>
                 </>
+              )}
+              {sectionKey === "fundamentals" && (
+                <AnomaliesPanel
+                  anomalies={section?.anomalies ?? []}
+                  note={section?.metrics_note}
+                />
               )}
             </div>
           );

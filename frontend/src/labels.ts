@@ -69,6 +69,25 @@ export function severityBadge(severity: string): StatusBadge {
   return SEVERITY_BADGES[severity] ?? SEVERITY_BADGES.Low;
 }
 
+export const METRIC_LABELS: Record<string, string> = {
+  revenue: "Revenue",
+  net_income: "Net Income",
+  gross_margin: "Gross Margin",
+  operating_margin: "Operating Margin",
+  debt_to_equity: "Debt-to-Equity",
+  free_cash_flow: "Free Cash Flow",
+};
+
+/**
+ * Maps a backend `metric_name` identifier to its human-readable display
+ * label (METRIC-02). Covers the six D-01 core metrics. Falls back to the
+ * raw identifier for any unrecognized metric_name, same convention as
+ * `agentLabel`.
+ */
+export function metricLabel(metricName: string): string {
+  return METRIC_LABELS[metricName] ?? metricName;
+}
+
 export const COVERAGE_BADGE: StatusBadge = { color: "#D97706", text: "Exceeds Coverage" };
 
 /**

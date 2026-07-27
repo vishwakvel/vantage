@@ -24,10 +24,21 @@ Coverage rule (04-02-PLAN.md, locked decision):
   - Chunks present but missing at least one target section -> PARTIAL +
     AgentOutputCompleteness.PARTIAL, missing_fields lists the absent
     section names.
+
+Financial metrics & anomalies (METRIC-01/02/03, 09-06-PLAN.md D-07): the
+node also persists the ticker's quarterly financial metrics and attaches
+severity-rated anomalies detected against that history. A failure in that
+step (a metrics fetch/persist error, a detection error, or simply too
+little history) degrades to an inline ``metrics_note`` on the fundamentals
+output instead of affecting ``AgentTask.status`` or
+``AgentOutputCompleteness`` (R-E) — metric availability and filing-section
+coverage measure genuinely different things, and one must never silently
+downgrade the other.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -39,12 +50,15 @@ from app.db.models import (
 )
 from app.ingestion.retriever import hybrid_retrieve
 from app.ingestion.section_constants import (
+    SECTION_ANOMALIES,
     SECTION_FINANCIALS,
     SECTION_FUNDAMENTALS,
     SECTION_MDA,
     SECTION_NOTES,
     SECTION_RISK_FACTORS,
 )
+from app.services.anomaly_detection import detect_anomalies
+from app.services.financial_metrics_service import persist_quarterly_metrics
 from app.services.groq_client import call_groq
 
 logger = logging.getLogger(__name__)
@@ -61,6 +75,14 @@ logger = logging.getLogger(__name__)
 _REASONS: dict[str, str] = {
     "zero_chunks": "Fundamentals analysis unavailable — no filing data found",
     "llm_error": "Fundamentals analysis unavailable — analysis engine error",
+    "insufficient_history": (
+        "Anomaly detection skipped for some metrics — fewer than four "
+        "quarters of history available"
+    ),
+    "metrics_unavailable": (
+        "Anomaly detection skipped — financial metrics could not be "
+        "retrieved for this run"
+    ),
 }
 
 #: The four filing sections a comprehensive FundamentalAnalysis read must
@@ -124,13 +146,53 @@ def _build_prompt(ticker: str, chunks: list[dict[str, Any]]) -> str:
     )
 
 
+async def _collect_anomalies(
+    ticker: str, session: Any
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Persist quarterly metrics and run anomaly detection for *ticker*.
+
+    Never raises (D-07): a persistence failure, a detection failure, or an
+    empty metrics history all degrade to an empty anomalies list plus a
+    ``_REASONS`` note rather than propagating, so a metrics problem can
+    never reach the node's outer handler and flip the whole section to
+    FAILED (R-E, 09-06-PLAN.md). ``detect_anomalies`` is CPU-bound, so it is
+    offloaded via ``asyncio.to_thread`` (T-09-DOS) rather than called
+    inline.
+    """
+    try:
+        series = await persist_quarterly_metrics(ticker, session)
+    except Exception:
+        logger.exception("Metrics persistence failed for ticker=%s", ticker)
+        return [], _REASONS["metrics_unavailable"]
+
+    if not series:
+        return [], _REASONS["metrics_unavailable"]
+
+    try:
+        report = await asyncio.to_thread(detect_anomalies, series)
+    except Exception:
+        logger.exception("Anomaly detection failed for ticker=%s", ticker)
+        return [], _REASONS["metrics_unavailable"]
+
+    note = _REASONS["insufficient_history"] if report.skipped_metrics else None
+    return report.anomalies, note
+
+
 def _fallback_output() -> dict[str, Any]:
     """Minimal, non-null AgentOutput.output body written on FAILED paths.
 
     AgentOutput.output is NOT NULL at the schema level, so both the
     zero-chunk and exception paths still write a (mostly empty) output row.
+    Includes the same ``anomalies``/``metrics_note`` keys the success path
+    writes, so a consumer never has to distinguish "key absent" from
+    "genuinely empty".
     """
-    return {"narrative": None, "citations": []}
+    return {
+        "narrative": None,
+        "citations": [],
+        SECTION_ANOMALIES: [],
+        "metrics_note": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +245,13 @@ async def fundamental_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
             _build_prompt(ticker, chunks), max_tokens=_MAX_TOKENS
         )
         citations = [_build_citation(chunk) for chunk in chunks]
+        anomalies, metrics_note = await _collect_anomalies(ticker, session)
         output = {
             "narrative": narrative,
             "citations": citations,
             "section": SECTION_FUNDAMENTALS,
+            SECTION_ANOMALIES: anomalies,
+            "metrics_note": metrics_note,
         }
 
         present_sections = {chunk["metadata"]["section"] for chunk in chunks}

@@ -187,8 +187,12 @@ async def test_run_research_async_updates_existing_memo_with_full_body(
         "comparables",
         "synthesis",
     }
-    # SUCCESS sections store the output as-is.
-    assert memo.body["fundamentals"] == {"narrative": "Strong revenue growth."}
+    # SUCCESS sections store the output as-is, except METRIC-02's
+    # anomalies backfill unconditionally guarantees the key is present.
+    assert memo.body["fundamentals"] == {
+        "narrative": "Strong revenue growth.",
+        "anomalies": [],
+    }
     # FAILED section is never dropped (EXEC-04) and carries a non-null reason.
     assert memo.body["sentiment"]["narrative"] is None
     assert memo.body["sentiment"]["status"] == "FAILED"
@@ -297,6 +301,48 @@ async def test_run_research_async_synthesis_failed_still_has_empty_contradiction
     await db_session.refresh(memo)
 
     assert memo.body["synthesis"]["contradictions"] == []
+
+
+async def test_run_research_async_fundamentals_failed_still_has_empty_anomalies(
+    db_session: AsyncSession,
+):
+    """METRIC-02 precedent applied to EXEC-04: a FAILED fundamentals section
+    still exposes an empty anomalies list, never a missing key."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    final_state = {
+        **_FINAL_STATE,
+        "fundamentals_output": None,
+        "fundamentals_status": "FAILED",
+        "memo_status": "PARTIAL",
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=final_state)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.body["fundamentals"]["anomalies"] == []
 
 
 async def test_run_research_async_marks_memo_failed_on_unexpected_exception(
