@@ -27,10 +27,12 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
@@ -143,6 +145,54 @@ class Company(Base):
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
+        nullable=False,
+    )
+
+
+class FinancialMetric(Base):
+    """Structured quarterly financial figure for a company (METRIC-01).
+
+    Keyed by the three-column business key ``(ticker, metric_name, period)``
+    (D-06) — a row is re-upserted on every research run rather than being
+    append-only, so ``updated_at`` records the most recent successful
+    refresh. Stores quarterly figures only (D-03); ``metric_name`` holds the
+    canonical identifiers owned by ``app/services/financial_metrics_source.py``
+    (revenue, net_income, gross_margin, operating_margin, debt_to_equity,
+    free_cash_flow).
+    """
+
+    __tablename__ = "financial_metrics"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker",
+            "metric_name",
+            "period",
+            name="uq_financial_metrics_ticker_metric_period",
+        ),
+    )
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    ticker = Column(
+        String(20),
+        ForeignKey("companies.ticker", ondelete="CASCADE"),
+        nullable=False,
+    )
+    metric_name = Column(String(50), nullable=False)
+    period = Column(String(10), nullable=False)
+    value = Column(Float, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
         nullable=False,
     )
 
