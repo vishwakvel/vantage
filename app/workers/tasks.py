@@ -34,6 +34,7 @@ from app.db.models import AgentOutput, AgentTask, ResearchMemo, ResearchMemoStat
 from app.db.session import reset_session_factory, session_scope
 from app.graph.research_graph import build_research_graph
 from app.ingestion.section_constants import (
+    SECTION_ANOMALIES,
     SECTION_COMPARABLES,
     SECTION_CONTRADICTIONS,
     SECTION_FUNDAMENTALS,
@@ -193,6 +194,14 @@ async def _run_research_async(
             # missing/undefined for the frontend (EXEC-04 precedent, applied
             # one level down to this nested key).
             body[SECTION_SYNTHESIS].setdefault(SECTION_CONTRADICTIONS, [])
+
+            # METRIC-02: the fundamentals section always exposes an
+            # anomalies list — on the SUCCESS path the key is already
+            # present from fundamentals_output (plan 09-06), but the
+            # FAILED-marker branch above replaces the section body
+            # wholesale with narrative/status/reason and would otherwise
+            # leave body.fundamentals.anomalies undefined for the frontend.
+            body[SECTION_FUNDAMENTALS].setdefault(SECTION_ANOMALIES, [])
 
             memo.status = ResearchMemoStatus(final_state["memo_status"])
             memo.body = body

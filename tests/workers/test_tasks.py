@@ -187,8 +187,12 @@ async def test_run_research_async_updates_existing_memo_with_full_body(
         "comparables",
         "synthesis",
     }
-    # SUCCESS sections store the output as-is.
-    assert memo.body["fundamentals"] == {"narrative": "Strong revenue growth."}
+    # SUCCESS sections store the output as-is, except METRIC-02's
+    # anomalies backfill unconditionally guarantees the key is present.
+    assert memo.body["fundamentals"] == {
+        "narrative": "Strong revenue growth.",
+        "anomalies": [],
+    }
     # FAILED section is never dropped (EXEC-04) and carries a non-null reason.
     assert memo.body["sentiment"]["narrative"] is None
     assert memo.body["sentiment"]["status"] == "FAILED"
