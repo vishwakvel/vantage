@@ -23,6 +23,19 @@ export interface ContradictionItem {
 }
 
 /**
+ * A single detected-anomaly entry (METRIC-02). Produced by
+ * `app/services/anomaly_detection.py::detect_anomalies` and carried at
+ * `MemoResponse.body.fundamentals.anomalies`.
+ */
+export interface AnomalyItem {
+  metric_name: string;
+  period: string;
+  value: number;
+  severity: "High" | "Medium" | "Low";
+  description: string;
+}
+
+/**
  * Shape returned by both GET memo routes (matches
  * `app/api/v1/research.py::MemoResponse`). `body` is the structured
  * per-section memo payload rendered by MemoView/ContradictionsPanel.
