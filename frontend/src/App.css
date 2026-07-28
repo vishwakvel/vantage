@@ -338,3 +338,100 @@ body {
   color: var(--color-destructive);
   margin-top: var(--space-xs);
 }
+
+/* Watchlist section (Phase 10 — Watchlist.tsx / AlertRuleForm.tsx) */
+
+.watchlist {
+  gap: var(--space-md);
+}
+
+.watchlist-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.watchlist-add-row .input {
+  flex: 1;
+}
+
+.watchlist-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.watchlist-entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  background: var(--color-bg);
+  border-radius: 6px;
+  padding: var(--space-sm) var(--space-md);
+}
+
+.watchlist-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.watchlist-ticker {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+.watchlist-meta {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+.alert-rule-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.alert-rule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.alert-rule-summary {
+  color: var(--color-text);
+}
+
+.alert-rule-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  cursor: pointer;
+}
+
+.alert-rule-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-surface);
+}
+
+.alert-rule-form-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-sm);
+}
