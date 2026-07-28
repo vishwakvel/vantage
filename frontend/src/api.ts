@@ -249,3 +249,113 @@ export async function sendChatMessage(
   }
   return (await response.json()) as ChatMessage;
 }
+
+/**
+ * GET /watchlist — fetches every watchlisted ticker for the current user
+ * (WATCH-02), each carrying its nested alert rules and latest-memo status
+ * in one round trip.
+ */
+export async function getWatchlist(token: string): Promise<WatchlistResponse> {
+  const response = await fetch(`${API_BASE}/watchlist`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Get watchlist failed with status ${response.status}`);
+  }
+  return (await response.json()) as WatchlistResponse;
+}
+
+/**
+ * POST /watchlist — adds a ticker to the current user's watchlist
+ * (WATCH-01). The backend normalises the ticker to uppercase and, per D-04,
+ * re-adding a ticker already on the list is idempotent — it returns the
+ * existing entry rather than an error, so the caller never needs a
+ * duplicate check.
+ */
+export async function addToWatchlist(
+  ticker: string,
+  token: string,
+): Promise<WatchlistEntryResponse> {
+  const response = await fetch(`${API_BASE}/watchlist`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ ticker }),
+  });
+  if (!response.ok) {
+    throw new Error(`Add to watchlist failed with status ${response.status}`);
+  }
+  return (await response.json()) as WatchlistEntryResponse;
+}
+
+/**
+ * DELETE /watchlist/{entryId} — removes a ticker from the current user's
+ * watchlist (WATCH-01). Per D-03 this cascade-deletes the entry's alert
+ * rules on the backend. The backend answers 204 with no body, so this
+ * function never calls `response.json()`.
+ */
+export async function removeFromWatchlist(
+  entryId: string,
+  token: string,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/watchlist/${entryId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Remove from watchlist failed with status ${response.status}`);
+  }
+}
+
+/**
+ * POST /watchlist/{entryId}/rules — creates a new alert rule on a
+ * watchlisted ticker (WATCH-03/04/05). `config`'s shape is constrained at
+ * compile time by `ruleType` via the `AlertRuleConfig` union, but the
+ * backend re-validates every payload server-side (defence in depth).
+ */
+export async function createAlertRule(
+  entryId: string,
+  ruleType: AlertRuleType,
+  config: AlertRuleConfig,
+  token: string,
+): Promise<AlertRuleResponse> {
+  const response = await fetch(`${API_BASE}/watchlist/${entryId}/rules`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ rule_type: ruleType, config }),
+  });
+  if (!response.ok) {
+    throw new Error(`Create alert rule failed with status ${response.status}`);
+  }
+  return (await response.json()) as AlertRuleResponse;
+}
+
+/**
+ * PATCH /watchlist/rules/{ruleId} — enables or disables an existing alert
+ * rule (WATCH-08). Per D-07 there is no delete-rule counterpart in this
+ * phase: disabling is the only way to retire a rule.
+ */
+export async function toggleAlertRule(
+  ruleId: string,
+  enabled: boolean,
+  token: string,
+): Promise<AlertRuleResponse> {
+  const response = await fetch(`${API_BASE}/watchlist/rules/${ruleId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) {
+    throw new Error(`Toggle alert rule failed with status ${response.status}`);
+  }
+  return (await response.json()) as AlertRuleResponse;
+}
