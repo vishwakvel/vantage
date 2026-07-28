@@ -69,6 +69,91 @@ export interface ChatMessagesResponse {
 }
 
 /**
+ * The three supported alert-rule kinds (D-05; mirrors
+ * `app/db/models.py::AlertRuleType`).
+ */
+export type AlertRuleType = "NEW_FILING" | "PRICE_MOVE" | "SCHEDULED";
+
+/**
+ * Direction a PRICE_MOVE rule watches for (D-09).
+ */
+export type PriceMoveDirection = "up" | "down" | "either";
+
+/**
+ * Fixed recurrence presets for a SCHEDULED rule — never a raw cron string
+ * (D-11).
+ */
+export type ScheduledCadence = "daily" | "weekly" | "monthly";
+
+/**
+ * A NEW_FILING rule's config is always an empty object (D-12) — triggers on
+ * any new EDGAR filing for the ticker, no filing-type filter in this phase.
+ */
+export type NewFilingConfig = Record<string, never>;
+
+/**
+ * A PRICE_MOVE rule's config (D-09). Note D-10: no baseline price is stored
+ * here — the reference price is runtime state Phase 11's evaluator owns.
+ */
+export interface PriceMoveConfig {
+  threshold_pct: number;
+  direction: PriceMoveDirection;
+}
+
+/**
+ * A SCHEDULED rule's config (D-11).
+ */
+export interface ScheduledConfig {
+  cadence: ScheduledCadence;
+}
+
+/**
+ * Discriminable union of every rule type's config shape, keyed by
+ * `AlertRuleType` at the call site (D-09/D-11/D-12) so a component cannot
+ * construct an invalid payload.
+ */
+export type AlertRuleConfig = NewFilingConfig | PriceMoveConfig | ScheduledConfig;
+
+/**
+ * A single alert rule (matches `app/api/v1/watchlist.py::AlertRuleResponse`,
+ * plan 10-05).
+ */
+export interface AlertRuleResponse {
+  id: string;
+  rule_type: AlertRuleType;
+  config: AlertRuleConfig;
+  enabled: boolean;
+  created_at: string;
+}
+
+/**
+ * A single watchlisted ticker with its nested alert rules and latest
+ * research status (matches
+ * `app/api/v1/watchlist.py::WatchlistEntryResponse`, plan 10-05).
+ * `latest_memo_status`/`latest_memo_date` are D-13: the status and creation
+ * date of this user's most recent research memo for the ticker, both `null`
+ * when no research exists yet.
+ */
+export interface WatchlistEntryResponse {
+  id: string;
+  ticker: string;
+  created_at: string;
+  latest_memo_status: string | null;
+  latest_memo_date: string | null;
+  alert_rules: AlertRuleResponse[];
+}
+
+/**
+ * Shape returned by `GET /watchlist` (matches
+ * `app/api/v1/watchlist.py::WatchlistResponse`, plan 10-05) — the
+ * single-round-trip nested shape, entries carrying their own rules and
+ * memo status.
+ */
+export interface WatchlistResponse {
+  entries: WatchlistEntryResponse[];
+}
+
+/**
  * POST /auth/login — exchanges email/password for a bearer JWT.
  * Returns the raw access_token string on success; throws on any non-2xx.
  */
@@ -163,4 +248,114 @@ export async function sendChatMessage(
     throw new Error(`Send chat message failed with status ${response.status}`);
   }
   return (await response.json()) as ChatMessage;
+}
+
+/**
+ * GET /watchlist — fetches every watchlisted ticker for the current user
+ * (WATCH-02), each carrying its nested alert rules and latest-memo status
+ * in one round trip.
+ */
+export async function getWatchlist(token: string): Promise<WatchlistResponse> {
+  const response = await fetch(`${API_BASE}/watchlist`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Get watchlist failed with status ${response.status}`);
+  }
+  return (await response.json()) as WatchlistResponse;
+}
+
+/**
+ * POST /watchlist — adds a ticker to the current user's watchlist
+ * (WATCH-01). The backend normalises the ticker to uppercase and, per D-04,
+ * re-adding a ticker already on the list is idempotent — it returns the
+ * existing entry rather than an error, so the caller never needs a
+ * duplicate check.
+ */
+export async function addToWatchlist(
+  ticker: string,
+  token: string,
+): Promise<WatchlistEntryResponse> {
+  const response = await fetch(`${API_BASE}/watchlist`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ ticker }),
+  });
+  if (!response.ok) {
+    throw new Error(`Add to watchlist failed with status ${response.status}`);
+  }
+  return (await response.json()) as WatchlistEntryResponse;
+}
+
+/**
+ * DELETE /watchlist/{entryId} — removes a ticker from the current user's
+ * watchlist (WATCH-01). Per D-03 this cascade-deletes the entry's alert
+ * rules on the backend. The backend answers 204 with no body, so this
+ * function never calls `response.json()`.
+ */
+export async function removeFromWatchlist(
+  entryId: string,
+  token: string,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/watchlist/${entryId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Remove from watchlist failed with status ${response.status}`);
+  }
+}
+
+/**
+ * POST /watchlist/{entryId}/rules — creates a new alert rule on a
+ * watchlisted ticker (WATCH-03/04/05). `config`'s shape is constrained at
+ * compile time by `ruleType` via the `AlertRuleConfig` union, but the
+ * backend re-validates every payload server-side (defence in depth).
+ */
+export async function createAlertRule(
+  entryId: string,
+  ruleType: AlertRuleType,
+  config: AlertRuleConfig,
+  token: string,
+): Promise<AlertRuleResponse> {
+  const response = await fetch(`${API_BASE}/watchlist/${entryId}/rules`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ rule_type: ruleType, config }),
+  });
+  if (!response.ok) {
+    throw new Error(`Create alert rule failed with status ${response.status}`);
+  }
+  return (await response.json()) as AlertRuleResponse;
+}
+
+/**
+ * PATCH /watchlist/rules/{ruleId} — enables or disables an existing alert
+ * rule (WATCH-08). Per D-07 there is no delete-rule counterpart in this
+ * phase: disabling is the only way to retire a rule.
+ */
+export async function toggleAlertRule(
+  ruleId: string,
+  enabled: boolean,
+  token: string,
+): Promise<AlertRuleResponse> {
+  const response = await fetch(`${API_BASE}/watchlist/rules/${ruleId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) {
+    throw new Error(`Toggle alert rule failed with status ${response.status}`);
+  }
+  return (await response.json()) as AlertRuleResponse;
 }

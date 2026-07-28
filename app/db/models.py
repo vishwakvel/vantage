@@ -100,6 +100,21 @@ class AgentOutputCompleteness(enum.StrEnum):
     PARTIAL = "PARTIAL"
 
 
+class AlertRuleType(enum.StrEnum):
+    """Closed set of alert-rule kinds an ``AlertRule`` row can be (D-05).
+
+    Per-type payload shapes live in ``AlertRule.config`` (a JSON blob), not
+    in separate tables — a ``NEW_FILING`` rule's config is ``{}`` (D-12), a
+    ``PRICE_MOVE`` rule's is ``{"threshold_pct": <float>, "direction": "up"
+    | "down" | "either"}`` (D-09), and a ``SCHEDULED`` rule's is
+    ``{"cadence": "daily" | "weekly" | "monthly"}`` (D-11).
+    """
+
+    NEW_FILING = "NEW_FILING"
+    PRICE_MOVE = "PRICE_MOVE"
+    SCHEDULED = "SCHEDULED"
+
+
 # ---------------------------------------------------------------------------
 # ORM models
 # ---------------------------------------------------------------------------
@@ -184,6 +199,104 @@ class FinancialMetric(Base):
     metric_name = Column(String(50), nullable=False)
     period = Column(String(10), nullable=False)
     value = Column(Float, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class WatchlistEntry(Base):
+    """A user's watchlisted ticker — the parent row every ``AlertRule`` hangs off.
+
+    ``(user_id, ticker)`` is unique (D-04): a watchlist is a set of tickers,
+    not a multiset, so a repeated add-ticker request can only be a no-op. The
+    row's ``Company`` parent is upserted on first use by
+    ``app/services/company_service.py::ensure_company_exists`` (D-01) — any
+    ticker string is accepted, not just ones Vantage has already researched.
+    Both FKs cascade (D-03): removing a user or a company removes every
+    watchlist entry that depended on it, and removing an entry removes its
+    ``AlertRule`` rows in turn. No ``updated_at`` — a watchlist row is
+    immutable once written (added or removed, never edited; D-08 rules out a
+    watchlist-level enable/disable toggle, so there is nothing on this row to
+    mutate in place).
+    """
+
+    __tablename__ = "watchlist_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "ticker",
+            name="uq_watchlist_entries_user_id_ticker",
+        ),
+    )
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticker = Column(
+        String(20),
+        ForeignKey("companies.ticker", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class AlertRule(Base):
+    """A configured alert on a watchlisted ticker (D-05: one table, JSON config).
+
+    ``rule_type`` is a closed ``AlertRuleType`` enum; per-type payload shapes
+    live in ``config`` (a JSON blob) rather than in three separate typed
+    tables. Deliberately no ``UniqueConstraint`` on ``(watchlist_id,
+    rule_type)`` — D-06 explicitly allows several rules of the same type on
+    one entry (e.g. a 5% "heads up" and a 15% "urgent" ``PRICE_MOVE`` rule on
+    the same ticker). There is no ``user_id`` column here: ownership is
+    enforced entirely through the parent ``WatchlistEntry.user_id`` FK,
+    mirroring how ``ChatMessage``'s docstring describes ownership flowing
+    through its own parent memo. This phase never hard-deletes a rule (D-07)
+    — the only deletion path is the D-03 cascade from its parent
+    ``WatchlistEntry``. ``enabled`` defaults to ``True`` so a brand-new rule
+    is live immediately (WATCH-08); ``updated_at`` records when that flag was
+    last toggled.
+    """
+
+    __tablename__ = "alert_rules"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    watchlist_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("watchlist_entries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    rule_type = Column(SAEnum(AlertRuleType), nullable=False)
+    config = Column(JSON, nullable=False)
+    enabled = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
