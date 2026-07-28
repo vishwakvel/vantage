@@ -69,6 +69,91 @@ export interface ChatMessagesResponse {
 }
 
 /**
+ * The three supported alert-rule kinds (D-05; mirrors
+ * `app/db/models.py::AlertRuleType`).
+ */
+export type AlertRuleType = "NEW_FILING" | "PRICE_MOVE" | "SCHEDULED";
+
+/**
+ * Direction a PRICE_MOVE rule watches for (D-09).
+ */
+export type PriceMoveDirection = "up" | "down" | "either";
+
+/**
+ * Fixed recurrence presets for a SCHEDULED rule — never a raw cron string
+ * (D-11).
+ */
+export type ScheduledCadence = "daily" | "weekly" | "monthly";
+
+/**
+ * A NEW_FILING rule's config is always an empty object (D-12) — triggers on
+ * any new EDGAR filing for the ticker, no filing-type filter in this phase.
+ */
+export type NewFilingConfig = Record<string, never>;
+
+/**
+ * A PRICE_MOVE rule's config (D-09). Note D-10: no baseline price is stored
+ * here — the reference price is runtime state Phase 11's evaluator owns.
+ */
+export interface PriceMoveConfig {
+  threshold_pct: number;
+  direction: PriceMoveDirection;
+}
+
+/**
+ * A SCHEDULED rule's config (D-11).
+ */
+export interface ScheduledConfig {
+  cadence: ScheduledCadence;
+}
+
+/**
+ * Discriminable union of every rule type's config shape, keyed by
+ * `AlertRuleType` at the call site (D-09/D-11/D-12) so a component cannot
+ * construct an invalid payload.
+ */
+export type AlertRuleConfig = NewFilingConfig | PriceMoveConfig | ScheduledConfig;
+
+/**
+ * A single alert rule (matches `app/api/v1/watchlist.py::AlertRuleResponse`,
+ * plan 10-05).
+ */
+export interface AlertRuleResponse {
+  id: string;
+  rule_type: AlertRuleType;
+  config: AlertRuleConfig;
+  enabled: boolean;
+  created_at: string;
+}
+
+/**
+ * A single watchlisted ticker with its nested alert rules and latest
+ * research status (matches
+ * `app/api/v1/watchlist.py::WatchlistEntryResponse`, plan 10-05).
+ * `latest_memo_status`/`latest_memo_date` are D-13: the status and creation
+ * date of this user's most recent research memo for the ticker, both `null`
+ * when no research exists yet.
+ */
+export interface WatchlistEntryResponse {
+  id: string;
+  ticker: string;
+  created_at: string;
+  latest_memo_status: string | null;
+  latest_memo_date: string | null;
+  alert_rules: AlertRuleResponse[];
+}
+
+/**
+ * Shape returned by `GET /watchlist` (matches
+ * `app/api/v1/watchlist.py::WatchlistResponse`, plan 10-05) — the
+ * single-round-trip nested shape, entries carrying their own rules and
+ * memo status.
+ */
+export interface WatchlistResponse {
+  entries: WatchlistEntryResponse[];
+}
+
+/**
  * POST /auth/login — exchanges email/password for a bearer JWT.
  * Returns the raw access_token string on success; throws on any non-2xx.
  */
