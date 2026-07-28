@@ -27,8 +27,33 @@ Coverage (Task 1 — watchlist entry routes, WATCH-01/WATCH-02):
     - non-UUID path segment (422, not 500)
     - unauthenticated request
 
-Task 2 (alert-rule routes, WATCH-03/04/05/08) is appended below this
-docstring's coverage list once written.
+Coverage (Task 2 — alert-rule routes, WATCH-03/04/05/08):
+  POST /watchlist/{entry_id}/rules:
+    - NEW_FILING happy path (WATCH-03, D-12 empty config, enabled defaults true)
+    - PRICE_MOVE happy path (WATCH-04, D-09 — persisted config normalises an
+      integer threshold to a float)
+    - SCHEDULED happy path for daily/weekly/monthly (WATCH-05, D-11)
+    - D-06: two PRICE_MOVE rules with different thresholds on one entry
+      both succeed with different ids
+    - invalid config rejection matrix (400, unchanged row count) for an
+      unknown direction, a zero threshold, an above-100 threshold, a
+      missing direction, an extra key, an unknown cadence, a cron key, and
+      a non-empty NEW_FILING config
+    - an unknown rule_type string (422, no row written)
+    - other-user entry_id (404, T-10-05-IDOR) and unknown entry UUID (404)
+    - unauthenticated request
+  PATCH /watchlist/rules/{rule_id}:
+    - disable then re-enable, asserting the row still exists after being
+      disabled (WATCH-08, D-07)
+    - rule_type/config unchanged after a toggle
+    - other-user rule_id (404, enabled value unchanged — join-through-parent
+      ownership path)
+    - unknown rule UUID (404), non-UUID segment (422)
+    - unauthenticated request
+  Round-trip: add a ticker, create one rule of each type, disable one, then
+    a single GET /watchlist asserts the entry, all three rules, their
+    enabled values, and the D-13 status fields — the shape the frontend
+    actually consumes.
 
 Every test drives the composed app via ``create_app()`` (through
 ``_make_authed_client``/``_make_unauthed_client``), so an unregistered
@@ -493,3 +518,513 @@ async def test_delete_watchlist_entry_requires_auth(
         select(WatchlistEntry).where(WatchlistEntry.id == uuid.UUID(entry_id))
     )
     assert result.scalar_one_or_none() is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 2 helper — seed a watchlist entry through the API (WATCH-03/04/05/08)
+# ---------------------------------------------------------------------------
+
+
+async def _add_ticker(client, ticker: str = "AAPL") -> str:
+    """POST /watchlist for *ticker* and return the new entry's id as a string.
+
+    Every rule test starts from a real entry created through the same API
+    surface being tested, matching Task 1's seeding style rather than
+    inserting a WatchlistEntry row directly.
+    """
+    resp = await client.post(WATCHLIST_URL, json={"ticker": ticker})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+# ---------------------------------------------------------------------------
+# POST /watchlist/{entry_id}/rules (WATCH-03, WATCH-04, WATCH-05, D-06, D-09,
+# D-11, D-12)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_alert_rule_new_filing_happy_path(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A NEW_FILING rule persists an empty config with enabled defaulting true (WATCH-03)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "BA")
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rule_type"] == "NEW_FILING"
+    assert body["config"] == {}
+    assert body["enabled"] is True
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.id == uuid.UUID(body["id"]))
+    )
+    rule = result.scalar_one()
+    assert rule.watchlist_id == uuid.UUID(entry_id)
+
+
+@pytest.mark.anyio
+async def test_create_alert_rule_price_move_happy_path(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A PRICE_MOVE rule persists threshold_pct as a float (WATCH-04, D-09)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "F")
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={
+                "rule_type": "PRICE_MOVE",
+                "config": {"threshold_pct": 5, "direction": "down"},
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.id == uuid.UUID(resp.json()["id"]))
+    )
+    rule = result.scalar_one()
+    assert rule.config["threshold_pct"] == 5.0
+    assert isinstance(rule.config["threshold_pct"], float)
+    assert rule.config["direction"] == "down"
+
+
+@pytest.mark.parametrize("cadence", ["daily", "weekly", "monthly"])
+@pytest.mark.anyio
+async def test_create_alert_rule_scheduled_happy_path(
+    db_session: AsyncSession, test_settings: Settings, cadence: str
+) -> None:
+    """A SCHEDULED rule persists the given cadence (WATCH-05, D-11)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "GM")
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "SCHEDULED", "config": {"cadence": cadence}},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["config"]["cadence"] == cadence
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.id == uuid.UUID(body["id"]))
+    )
+    rule = result.scalar_one()
+    assert rule.config["cadence"] == cadence
+
+
+@pytest.mark.anyio
+async def test_create_alert_rule_multiple_same_type_allowed(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Two PRICE_MOVE rules on the same entry both succeed with different
+    ids, and GET /watchlist shows both (D-06)."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "DIS")
+        first = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={
+                "rule_type": "PRICE_MOVE",
+                "config": {"threshold_pct": 5, "direction": "up"},
+            },
+        )
+        second = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={
+                "rule_type": "PRICE_MOVE",
+                "config": {"threshold_pct": 15, "direction": "up"},
+            },
+        )
+        list_resp = await client.get(WATCHLIST_URL)
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["id"] != second.json()["id"]
+
+    entry = next(e for e in list_resp.json()["entries"] if e["id"] == entry_id)
+    assert len(entry["alert_rules"]) == 2
+
+
+@pytest.mark.parametrize(
+    "rule_type,config",
+    [
+        ("PRICE_MOVE", {"threshold_pct": 5, "direction": "sideways"}),
+        ("PRICE_MOVE", {"threshold_pct": 0, "direction": "up"}),
+        ("PRICE_MOVE", {"threshold_pct": 101, "direction": "up"}),
+        ("PRICE_MOVE", {"threshold_pct": 5}),
+        ("PRICE_MOVE", {"threshold_pct": 5, "direction": "up", "extra": "nope"}),
+        ("SCHEDULED", {"cadence": "hourly"}),
+        ("SCHEDULED", {"cron": "* * * * *"}),
+        ("NEW_FILING", {"anything": "here"}),
+    ],
+    ids=[
+        "unknown_direction",
+        "zero_threshold",
+        "above_100_threshold",
+        "missing_direction",
+        "extra_key",
+        "unknown_cadence",
+        "cron_key",
+        "non_empty_new_filing",
+    ],
+)
+@pytest.mark.anyio
+async def test_create_alert_rule_invalid_config_rejected(
+    db_session: AsyncSession,
+    test_settings: Settings,
+    rule_type: str,
+    config: dict,
+) -> None:
+    """An invalid rule config is rejected with 400 and writes no row."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "COST")
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": rule_type, "config": config},
+        )
+
+    assert resp.status_code == 400, resp.text
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.watchlist_id == uuid.UUID(entry_id))
+    )
+    assert result.scalars().all() == []
+
+
+@pytest.mark.anyio
+async def test_create_alert_rule_unknown_rule_type_returns_422(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An unknown rule_type string is rejected by Pydantic with 422 before
+    the handler body runs."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "NKE")
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "SENTIMENT_SPIKE", "config": {}},
+        )
+
+    assert resp.status_code == 422, resp.text
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.watchlist_id == uuid.UUID(entry_id))
+    )
+    assert result.scalars().all() == []
+
+
+@pytest.mark.anyio
+async def test_create_alert_rule_other_user_entry_returns_404(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Another user's entry_id returns 404 and writes no row (T-10-05-IDOR)."""
+    owner = await _seed_user(db_session)
+    other_user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, owner) as client:
+        entry_id = await _add_ticker(client, "PEP")
+
+    async with _make_authed_client(db_session, test_settings, other_user) as client:
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+
+    assert resp.status_code == 404, resp.text
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.watchlist_id == uuid.UUID(entry_id))
+    )
+    assert result.scalars().all() == []
+
+
+@pytest.mark.anyio
+async def test_create_alert_rule_unknown_entry_uuid_returns_404(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An unknown random entry UUID returns 404."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{uuid.uuid4()}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_create_alert_rule_requires_auth(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An unauthenticated create-rule request returns 401/403 and writes no row."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "V")
+
+    async with _make_unauthed_client(db_session, test_settings) as client:
+        resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+
+    assert resp.status_code in (401, 403), resp.text
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.watchlist_id == uuid.UUID(entry_id))
+    )
+    assert result.scalars().all() == []
+
+
+# ---------------------------------------------------------------------------
+# PATCH /watchlist/rules/{rule_id} (WATCH-08, D-07)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_toggle_alert_rule_disable_then_reenable(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Disabling a rule leaves the row in place (D-07); re-enabling flips it back."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "MA")
+        create_resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+        rule_id = create_resp.json()["id"]
+
+        disable_resp = await client.patch(
+            f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False}
+        )
+        assert disable_resp.status_code == 200, disable_resp.text
+        assert disable_resp.json()["enabled"] is False
+
+        after_disable = await db_session.execute(
+            select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id))
+        )
+        disabled_rule = after_disable.scalar_one_or_none()
+        assert disabled_rule is not None, "rule row must still exist after disabling (D-07)"
+        assert disabled_rule.enabled is False
+
+        reenable_resp = await client.patch(
+            f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": True}
+        )
+        assert reenable_resp.status_code == 200, reenable_resp.text
+        assert reenable_resp.json()["enabled"] is True
+
+    after_reenable = await db_session.execute(
+        select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id))
+    )
+    assert after_reenable.scalar_one().enabled is True
+
+
+@pytest.mark.anyio
+async def test_toggle_alert_rule_type_and_config_unchanged(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A toggle only flips enabled — rule_type and config are unchanged."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "JPM")
+        create_resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "SCHEDULED", "config": {"cadence": "weekly"}},
+        )
+        rule_id = create_resp.json()["id"]
+
+        toggle_resp = await client.patch(
+            f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False}
+        )
+
+    assert toggle_resp.status_code == 200, toggle_resp.text
+    body = toggle_resp.json()
+    assert body["rule_type"] == "SCHEDULED"
+    assert body["config"] == {"cadence": "weekly"}
+
+
+@pytest.mark.anyio
+async def test_toggle_alert_rule_other_user_returns_404(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Another user's rule_id returns 404 and its enabled value is unchanged
+    (exercises the join-through-parent ownership path)."""
+    owner = await _seed_user(db_session)
+    other_user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, owner) as client:
+        entry_id = await _add_ticker(client, "WMT")
+        create_resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+        rule_id = create_resp.json()["id"]
+
+    async with _make_authed_client(db_session, test_settings, other_user) as client:
+        resp = await client.patch(
+            f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False}
+        )
+
+    assert resp.status_code == 404, resp.text
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id))
+    )
+    assert result.scalar_one().enabled is True
+
+
+@pytest.mark.anyio
+async def test_toggle_alert_rule_unknown_uuid_returns_404(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An unknown random rule UUID returns 404."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        resp = await client.patch(
+            f"{WATCHLIST_URL}/rules/{uuid.uuid4()}", json={"enabled": False}
+        )
+
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_toggle_alert_rule_non_uuid_returns_422(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """A non-UUID rule_id path segment returns 422."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        resp = await client.patch(
+            f"{WATCHLIST_URL}/rules/not-a-uuid", json={"enabled": False}
+        )
+
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_toggle_alert_rule_requires_auth(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """An unauthenticated toggle returns 401/403 and changes nothing."""
+    user = await _seed_user(db_session)
+    await db_session.commit()
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "XOM")
+        create_resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+        rule_id = create_resp.json()["id"]
+
+    async with _make_unauthed_client(db_session, test_settings) as client:
+        resp = await client.patch(
+            f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False}
+        )
+
+    assert resp.status_code in (401, 403), resp.text
+
+    result = await db_session.execute(
+        select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id))
+    )
+    assert result.scalar_one().enabled is True
+
+
+# ---------------------------------------------------------------------------
+# Round-trip: the shape the frontend actually consumes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_watchlist_round_trip_full_shape(
+    db_session: AsyncSession, test_settings: Settings
+) -> None:
+    """Add a ticker, create one rule of each type, disable one, then a
+    single GET /watchlist carries the entry, all three rules, their
+    enabled values, and the D-13 status fields."""
+    user = await _seed_user(db_session)
+    await _seed_company(db_session, ticker="INTC")
+    plan = await _seed_research_plan(db_session, user, resolved_tickers=["INTC"])
+    await db_session.commit()
+    memo = await _seed_memo(
+        db_session, plan, user, ticker="INTC", status=ResearchMemoStatus.PARTIAL
+    )
+
+    async with _make_authed_client(db_session, test_settings, user) as client:
+        entry_id = await _add_ticker(client, "INTC")
+
+        filing_resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "NEW_FILING", "config": {}},
+        )
+        assert filing_resp.status_code == 200, filing_resp.text
+
+        price_resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={
+                "rule_type": "PRICE_MOVE",
+                "config": {"threshold_pct": 10, "direction": "either"},
+            },
+        )
+        assert price_resp.status_code == 200, price_resp.text
+
+        scheduled_resp = await client.post(
+            f"{WATCHLIST_URL}/{entry_id}/rules",
+            json={"rule_type": "SCHEDULED", "config": {"cadence": "monthly"}},
+        )
+        assert scheduled_resp.status_code == 200, scheduled_resp.text
+        disabled_rule_id = scheduled_resp.json()["id"]
+
+        await client.patch(
+            f"{WATCHLIST_URL}/rules/{disabled_rule_id}", json={"enabled": False}
+        )
+
+        resp = await client.get(WATCHLIST_URL)
+
+    assert resp.status_code == 200, resp.text
+    entry = next(e for e in resp.json()["entries"] if e["id"] == entry_id)
+    assert entry["latest_memo_status"] == "PARTIAL"
+    assert entry["latest_memo_date"].startswith(memo.created_at.date().isoformat())
+
+    rules_by_type = {r["rule_type"]: r for r in entry["alert_rules"]}
+    assert set(rules_by_type) == {"NEW_FILING", "PRICE_MOVE", "SCHEDULED"}
+    assert rules_by_type["NEW_FILING"]["enabled"] is True
+    assert rules_by_type["PRICE_MOVE"]["enabled"] is True
+    assert rules_by_type["SCHEDULED"]["enabled"] is False
