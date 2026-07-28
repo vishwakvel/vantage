@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getMemo, login, startRun, type MemoResponse } from "./api";
 import { agentLabel, AGENT_ORDER, statusBadge } from "./labels";
 import MemoView from "./MemoView";
+import Watchlist from "./Watchlist";
 import { connectProgress, type ProgressConnection } from "./ws";
 
 type StatusMap = Record<string, string>;
@@ -220,6 +221,8 @@ export default function App() {
 
         {memo && token && <MemoView memo={memo} token={token} />}
       </div>
+
+      {token && <Watchlist token={token} />}
     </div>
   );
 }
