@@ -83,6 +83,17 @@ async def mark_all_read_for_user(user_id: UUID, session: AsyncSession) -> int:
     ``owned_unread_ids`` subquery restricting ids to the caller's own is not
     an optimisation: without it, this UPDATE would mark every user's
     notifications read (T-11-04-BULK).
+
+    Uses ``synchronize_session="fetch"`` (not ``False``): this still issues
+    exactly ONE UPDATE statement (plus one SELECT to gather the matching
+    ids for in-session sync — not a per-row loop), but keeps any
+    already-loaded ``AlertEvent`` ORM objects in *this* session's identity
+    map consistent with the row just written. Without it, a caller that
+    re-reads events through the SAME session immediately after calling this
+    (e.g. ``recent_events_for_user`` within one request/test) would see the
+    stale pre-update ``read`` value from the identity map even though the
+    database row itself is already updated — this exact staleness was
+    caught by ``tests/api/test_notifications_api.py::test_round_trip_notification_then_history``.
     """
     owned_unread_ids = (
         select(AlertEvent.id)
@@ -95,7 +106,7 @@ async def mark_all_read_for_user(user_id: UUID, session: AsyncSession) -> int:
         update(AlertEvent)
         .where(AlertEvent.id.in_(owned_unread_ids))
         .values(read=True)
-        .execution_options(synchronize_session=False)
+        .execution_options(synchronize_session="fetch")
     )
     await session.commit()
     return result.rowcount
