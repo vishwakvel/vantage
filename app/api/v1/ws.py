@@ -1,17 +1,25 @@
-"""Live-progress WebSocket route (EXEC-01, D-08/D-09/D-10).
+"""Live-progress and live-notification WebSocket routes.
 
-Endpoint:
-- WS /ws/research/{memo_id} → authenticates via a ``?token=`` query-param
-  JWT (browsers cannot set custom headers on a WS handshake), enforces
-  memo ownership, sends a snapshot of current per-agent statuses, streams
-  live per-agent transitions from Redis pub/sub (``app.services.
-  progress_publisher``, 06-02), then sends the terminal memo status and
-  closes the socket itself.
+Endpoints:
+- WS /ws/research/{memo_id} (EXEC-01, D-08/D-09/D-10) → authenticates via a
+  ``?token=`` query-param JWT (browsers cannot set custom headers on a WS
+  handshake), enforces memo ownership, sends a snapshot of current
+  per-agent statuses, streams live per-agent transitions from Redis pub/sub
+  (``app.services.progress_publisher``, 06-02), then sends the terminal
+  memo status and closes the socket itself.
+- WS /ws/notifications (WATCH-06, D-09) → authenticates the same way,
+  subscribes to the authenticated user's own ``notifications:{user_id}``
+  channel (``app.services.notification_publisher``, 11-02), sends a
+  snapshot of recent events plus the unread count, then forwards every
+  subsequent push for the life of the session — this socket never closes
+  itself.
 
 Mounted under /api/v1 by the v1 aggregator, yielding:
   /api/v1/ws/research/{memo_id}
+  /api/v1/ws/notifications
 
-Security boundaries (STRIDE T-06-01, T-06-02, T-06-03, T-06-04, T-06-04-XCH):
+Security boundaries (STRIDE T-06-01, T-06-02, T-06-03, T-06-04, T-06-04-XCH,
+T-11-04-WSAUTH, T-11-04-WSCHAN):
 - T-06-01 (spoofing): ``get_current_user_ws`` replicates the EXACT
   validation pipeline as ``app.core.dependencies.get_current_user``
   (decode → sub/jti required → Redis blocklist check → user fetch); any
@@ -31,6 +39,14 @@ Security boundaries (STRIDE T-06-01, T-06-02, T-06-03, T-06-04, T-06-04-XCH):
 - T-06-04-XCH (cross-memo channel read): the Redis subscription happens
   only AFTER the ownership check passes, so a user can never subscribe to
   another memo's progress channel.
+- T-11-04-WSAUTH (spoofing): ``notifications_ws`` reuses
+  ``get_current_user_ws`` verbatim; any failure closes 1008 BEFORE
+  ``accept()``, so no channel opens for an unauthenticated peer.
+- T-11-04-WSCHAN (information disclosure): the subscribed channel is
+  derived from the authenticated user's own id (via
+  ``app.services.notification_publisher``); the route accepts no resource
+  id at all, so a cross-user subscription is not expressible in the
+  request.
 """
 
 from __future__ import annotations
@@ -47,7 +63,13 @@ from app.core.config import Settings, get_settings
 from app.core.security import decode_access_token
 from app.db.models import AgentTask, ResearchMemo, ResearchMemoStatus, User
 from app.db.session import session_scope
+from app.services import notification_publisher
 from app.services.auth_service import is_token_revoked
+from app.services.notification_service import (
+    event_to_payload,
+    recent_events_for_user,
+    unread_count_for_user,
+)
 from app.services.progress_publisher import progress_channel
 
 router = APIRouter(prefix="/ws", tags=["ws"])
@@ -217,4 +239,94 @@ async def research_progress_ws(websocket: WebSocket, memo_id: str) -> None:
                 pass
 
 
-__all__ = ["router", "research_progress_ws", "get_current_user_ws"]
+@router.websocket("/notifications")
+async def notifications_ws(websocket: WebSocket) -> None:
+    """Stream live per-user notification pushes for the whole session (WATCH-06, D-09).
+
+    Flow, mirroring ``research_progress_ws`` step for step except where
+    noted:
+    1. Authenticate the ``?token=`` query-param JWT (T-11-04-WSAUTH) —
+       close(1008) BEFORE ``accept()`` on any failure, so no channel opens
+       for an unauthenticated peer.
+    2. There is NO second ownership check here, and this is the one
+       deliberate structural divergence from the memo route: this endpoint
+       accepts no resource id at all. The channel is derived from the
+       authenticated user's own id, so a cross-user read is not expressible
+       in the request (T-11-04-WSCHAN) — this is not a missing check, it is
+       an absent attack surface.
+    3. Accept, then ``pubsub.subscribe`` to the user's own
+       ``notifications:{user_id}`` channel FIRST (to avoid a lost-event
+       gap), and only then send the initial state frame — reusing
+       ``notification_service``'s helpers is what guarantees this frame and
+       the REST ``GET /notifications`` response carry identical rows and an
+       identical key set.
+    4. Stream every subsequent push from pub/sub indefinitely. Unlike
+       ``research_progress_ws``, which the server closes on a terminal memo
+       status (D-10, Phase 6), this socket stays open for the life of the
+       session because a user may receive many alerts over time (D-09) —
+       there is NO terminal event and NO ``break`` in the listen loop; do
+       not port the close-on-terminal logic here.
+    5. ``except WebSocketDisconnect: pass`` and a ``finally`` block that
+       unsubscribes, closes the pubsub, closes the redis client, and closes
+       the websocket inside ``try/except RuntimeError`` — byte-for-byte the
+       same cleanup shape as ``research_progress_ws``'s ``finally``.
+    """
+    token = websocket.query_params.get("token")
+    settings = get_settings()
+
+    async with session_scope() as session:
+        user = await get_current_user_ws(token, session, settings) if token else None
+        if user is None:
+            await websocket.close(code=1008)
+            return
+
+        await websocket.accept()
+
+        redis = _new_redis_client(settings)
+        pubsub = redis.pubsub()
+        channel = notification_publisher.notification_channel(str(user.id))
+
+        try:
+            # Subscribe BEFORE reading the snapshot so no event published
+            # between subscribe and snapshot is ever lost.
+            await pubsub.subscribe(channel)
+
+            events = await recent_events_for_user(user.id, session)
+            await websocket.send_json(
+                {
+                    "type": "snapshot",
+                    "notifications": [event_to_payload(event) for event in events],
+                    "unread_count": await unread_count_for_user(user.id, session),
+                }
+            )
+
+            # No terminal event and no break here (D-09): unlike the
+            # per-memo socket above, this one stays open for the whole
+            # session, forwarding every notification published on this
+            # user's channel until the client disconnects.
+            async for message in pubsub.listen():
+                if message.get("type") != "message":
+                    continue
+                data = json.loads(message["data"])
+                if data.get("type") == "notification":
+                    await websocket.send_json(data)
+        except WebSocketDisconnect:
+            # Client left early — clean up without treating this as an error.
+            pass
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+            await redis.close()
+            try:
+                await websocket.close(code=1000)
+            except RuntimeError:
+                # Already closed (e.g. the client disconnected first).
+                pass
+
+
+__all__ = [
+    "router",
+    "research_progress_ws",
+    "notifications_ws",
+    "get_current_user_ws",
+]
