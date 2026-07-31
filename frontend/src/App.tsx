@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getMemo, login, startRun, type MemoResponse } from "./api";
 import { agentLabel, AGENT_ORDER, statusBadge } from "./labels";
 import MemoView from "./MemoView";
+import NotificationBell from "./NotificationBell";
 import Watchlist from "./Watchlist";
 import { connectProgress, type ProgressConnection } from "./ws";
 
@@ -108,7 +109,10 @@ export default function App() {
 
   return (
     <div className="page">
-      <h1 className="heading">Vantage Research</h1>
+      <div className="page-header">
+        <h1 className="heading">Vantage Research</h1>
+        {token && <NotificationBell token={token} />}
+      </div>
 
       {!token && (
         <form className="section" onSubmit={handleLogin}>
