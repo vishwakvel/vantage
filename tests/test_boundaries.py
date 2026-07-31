@@ -14,7 +14,9 @@ Guards two vendor SDKs by two different techniques:
 - yfinance: imports are confined to app/services/ (Phase 9, T-09-BOUNDARY).
   This guard parses source files with ``ast`` instead of relying on
   sys.modules, so its result does not depend on import order or module
-  caching — it is deterministic and has zero import side effects.
+  caching — it is deterministic and has zero import side effects. Phase 11
+  adds a third allowed importer, app/services/live_price_source.py, for
+  PRICE_MOVE alert evaluation's spot-price lookup.
 
 Design decision D-20: the groq tests walk ALL submodules via
 pkgutil.walk_packages so newly added agent files are automatically covered —
@@ -101,6 +103,7 @@ _EXPECTED_YFINANCE_IMPORTERS: frozenset[str] = frozenset(
     {
         "app/services/comparables_source.py",
         "app/services/financial_metrics_source.py",
+        "app/services/live_price_source.py",
     }
 )
 
@@ -159,8 +162,9 @@ def test_yfinance_imports_confined_to_services() -> None:
     Parses every *.py file under app/ with ast (no import side effects, no
     dependency on module caching or import order) and asserts the set of
     yfinance-importing files equals exactly
-    {app/services/comparables_source.py, app/services/financial_metrics_source.py}.
-    Adding a third importer, or moving either module, fails this test.
+    {app/services/comparables_source.py, app/services/financial_metrics_source.py,
+    app/services/live_price_source.py}. Adding a fourth importer, or moving
+    any of the three modules, fails this test.
     """
     actual = _find_yfinance_importers()
 
