@@ -49,6 +49,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
 from app.db.models import AlertEvent, AlertRule, AlertRuleType, WatchlistEntry
@@ -122,6 +123,27 @@ async def evaluate_all_rules(
     fired = 0
 
     for rule, ticker, user_id in rows:
+        # A prior iteration's `session.rollback()` (this except block,
+        # below) expires EVERY object the session tracks, not just the
+        # rule that failed — since all rows were loaded into the same
+        # identity map by the single query above, a sibling rule not yet
+        # processed is expired too by the time its turn comes around. A
+        # real AsyncSession cannot satisfy a plain synchronous attribute
+        # access (`rule.id`) against an expired instance outside an
+        # explicit `await` — it raises `sqlalchemy.exc.MissingGreenlet`.
+        # Refreshing here (a cheap no-op when not expired) keeps one
+        # rule's failure from crashing every rule ordered after it in the
+        # same tick — the exact D-04 isolation guarantee this dispatcher
+        # promises. Mocked-session tests never surfaced this because a
+        # MagicMock attribute access never expires.
+        if sa_inspect(rule).expired:
+            await session.refresh(rule)
+
+        # Captured before any DB work so the per-rule exception handler
+        # below can log them even after this rule's OWN rollback expires
+        # the ORM instance's attributes.
+        rule_id = rule.id
+        rule_type = rule.rule_type
         try:
             if rule.rule_type is AlertRuleType.NEW_FILING:
                 message = await _evaluate_new_filing(rule, ticker, now)
@@ -137,8 +159,8 @@ async def evaluate_all_rules(
                 # nothing.
                 logger.warning(
                     "Alert rule %s has unrecognised rule_type %s",
-                    rule.id,
-                    rule.rule_type,
+                    rule_id,
+                    rule_type,
                 )
                 continue
 
@@ -173,8 +195,8 @@ async def evaluate_all_rules(
             await session.rollback()
             logger.warning(
                 "Alert rule %s (%s) evaluation failed: %s",
-                rule.id,
-                rule.rule_type,
+                rule_id,
+                rule_type,
                 exc,
             )
             continue
