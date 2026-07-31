@@ -74,3 +74,25 @@ services:
       chromadb:
         condition: service_healthy
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=info
+
+  # Celery beat is the scheduler process (enqueues evaluate_alert_rules on
+  # its 15-minute tick, per WATCH-09/D-04) — the worker above is the
+  # executor process. Exactly one beat replica must ever run: two would
+  # double every tick, doubling external API load and, for SCHEDULED rules,
+  # racing on last_triggered_at. Workers may still be scaled horizontally.
+  beat:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://vantage:vantage@postgres:5432/vantage
+      REDIS_URL: redis://redis:6379/0
+      CHROMADB_HOST: chromadb
+      CHROMADB_PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=info
