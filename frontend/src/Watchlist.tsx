@@ -15,6 +15,7 @@ import AlertRuleForm, {
   DIRECTION_LABELS,
   RULE_TYPE_LABELS,
 } from "./AlertRuleForm";
+import AlertHistory from "./AlertHistory";
 
 /**
  * Type guards narrowing on `rule.rule_type` so `describeRule` can read a
@@ -67,6 +68,8 @@ function describeRule(rule: AlertRuleResponse): string {
  * D-07/D-08: there is no rule-delete control and no entry-level
  * enable/disable control anywhere in this component — disable is the only
  * retirement path, and it is always per rule.
+ * Each entry also renders its own expandable per-ticker alert history
+ * (WATCH-07) via the sibling `AlertHistory` component.
  *
  * V5 (untrusted-adjacent output): ticker strings and rule summaries are
  * server-derived values echoed back from the database; they are rendered
@@ -267,6 +270,12 @@ export default function Watchlist({ token }: { token: string }) {
                   onCreated={() => {
                     void refresh();
                   }}
+                />
+
+                <AlertHistory
+                  entryId={entry.id}
+                  ticker={entry.ticker}
+                  token={token}
                 />
               </li>
             );
