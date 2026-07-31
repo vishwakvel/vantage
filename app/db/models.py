@@ -275,6 +275,16 @@ class AlertRule(Base):
     ``WatchlistEntry``. ``enabled`` defaults to ``True`` so a brand-new rule
     is live immediately (WATCH-08); ``updated_at`` records when that flag was
     last toggled.
+
+    ``state`` (Phase 11, D-03) is a nullable JSON blob owned and written
+    exclusively by Phase 11's evaluator (``app/services/alert_evaluation_service.py``),
+    never by any HTTP route. It is ``NULL`` until that rule's first
+    evaluation. Its keys vary by ``rule_type``: ``last_price`` +
+    ``last_checked_at`` for PRICE_MOVE, ``last_seen_accession`` +
+    ``last_checked_at`` for NEW_FILING, ``last_triggered_at`` +
+    ``last_checked_at`` for SCHEDULED (D-03). Because it is a plain ``JSON``
+    column, SQLAlchemy does not track in-place mutation, so every writer
+    must assign a NEW dict rather than mutating the existing one.
     """
 
     __tablename__ = "alert_rules"
@@ -291,6 +301,7 @@ class AlertRule(Base):
     )
     rule_type = Column(SAEnum(AlertRuleType), nullable=False)
     config = Column(JSON, nullable=False)
+    state = Column(JSON, nullable=True)
     enabled = Column(
         Boolean,
         nullable=False,
@@ -307,6 +318,48 @@ class AlertRule(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class AlertEvent(Base):
+    """One row per fired alert trigger (D-06) — serves BOTH WATCH-06
+    (in-app notifications) and WATCH-07 (per-ticker alert history).
+
+    There is no ``updated_at``, no ``user_id``, and no soft-delete column.
+    Rows are append-only: only ``read`` is ever written after insert, by
+    the bulk mark-read route. Ownership flows entirely through the
+    ``alert_rule_id`` -> ``watchlist_id`` -> ``user_id`` FK chain, mirroring
+    how ``AlertRule`` itself carries no ``user_id``. The only deletion path
+    is the D-06 cascade from the parent ``AlertRule`` — a disabled rule's
+    history is retained (D-07), because disabling is a soft toggle
+    (WATCH-08) and does not retroactively invalidate a trigger that really
+    happened.
+    """
+
+    __tablename__ = "alert_events"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    alert_rule_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("alert_rules.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    message = Column(String(500), nullable=False)
+    triggered_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    read = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
     )
 
 
