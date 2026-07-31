@@ -19,6 +19,19 @@ Coverage (11-06-PLAN.md, Task 1 — dispatcher isolation, NEW_FILING, SCHEDULED)
       each fixed cadence preset (daily/weekly/monthly), and D-01's
       never-launches-research non-goal asserted as a database fact.
 
+Coverage (Task 2 — PRICE_MOVE branches, JSON state-persistence guarantee):
+  TestPriceMove:
+    - baseline seeding, sub-threshold roll-without-fire, both directions
+      (up/down/either) firing and not-firing, exactly-at-threshold
+      inclusivity, D-05's sustained-condition no-refire (the single most
+      important test in this module), fetch-failure baseline preservation,
+      the zero/negative-baseline division-by-zero guard, and the
+      unrecognised-direction data-drift guard.
+  TestStatePersistence:
+    - state survives a commit for all three rule types, a state write is a
+      brand-new dict (not an in-place mutation SQLAlchemy would silently
+      drop), and state never leaks across sibling rules.
+
 Mocking policy: the DB session is REAL (test-postgres, port 5433, via the
 ``db_session`` fixture from ``tests/conftest.py``). Only the three external
 collaborators are mocked: ``app.services.alert_evaluation_service.edgar_client``
@@ -28,6 +41,7 @@ assertion goes through ``_reload`` (an ``expire_all`` + re-select) rather than
 the in-memory ORM instance — asserting against the in-memory object would
 pass even when a JSON column write was silently dropped at commit.
 """
+
 from __future__ import annotations
 
 import logging
@@ -583,3 +597,300 @@ class TestScheduled:
         for model in (ResearchRequest, ResearchPlan, ResearchMemo):
             result = await db_session.execute(select(func.count()).select_from(model))
             assert result.scalar_one() == 0
+
+
+# ---------------------------------------------------------------------------
+# TestPriceMove
+# ---------------------------------------------------------------------------
+
+
+class TestPriceMove:
+    @pytest.mark.anyio
+    async def test_first_evaluation_seeds_baseline_without_notifying(self, db_session, mocks):
+        mocks.get_price.return_value = 100.0
+        rule = await _seed_rule(
+            db_session, AlertRuleType.PRICE_MOVE, {"threshold_pct": 5.0, "direction": "down"}
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 0
+        assert await _count_events(db_session, rule.id) == 0
+        reloaded = await _reload(db_session, AlertRule, rule.id)
+        assert reloaded.state["last_price"] == 100.0
+
+    @pytest.mark.anyio
+    async def test_move_below_threshold_does_not_fire_but_rolls_baseline(self, db_session, mocks):
+        mocks.get_price.return_value = 102.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 0
+        reloaded = await _reload(db_session, AlertRule, rule.id)
+        assert reloaded.state["last_price"] == 102.0
+
+    @pytest.mark.anyio
+    async def test_down_move_past_threshold_fires_for_direction_down(self, db_session, mocks):
+        mocks.get_price.return_value = 93.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 1
+        result = await db_session.execute(
+            select(AlertEvent).where(AlertEvent.alert_rule_id == rule.id)
+        )
+        event = result.scalar_one()
+        assert "AAPL" in event.message
+        assert "dropped" in event.message
+        assert "7.0%" in event.message
+        assert "93.00" in event.message
+
+    @pytest.mark.anyio
+    async def test_up_move_does_not_fire_for_direction_down(self, db_session, mocks):
+        mocks.get_price.return_value = 108.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 0
+        reloaded = await _reload(db_session, AlertRule, rule.id)
+        assert reloaded.state["last_price"] == 108.0
+
+    @pytest.mark.anyio
+    async def test_up_move_past_threshold_fires_for_direction_up(self, db_session, mocks):
+        mocks.get_price.return_value = 108.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "up"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 1
+
+    @pytest.mark.anyio
+    async def test_down_move_does_not_fire_for_direction_up(self, db_session, mocks):
+        mocks.get_price.return_value = 93.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "up"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 0
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("price", [93.0, 107.0])
+    async def test_direction_either_fires_on_both_signs(self, db_session, mocks, price):
+        mocks.get_price.return_value = price
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "either"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 1
+
+    @pytest.mark.anyio
+    async def test_exactly_at_threshold_fires(self, db_session, mocks):
+        """The comparison is inclusive: pct_change <= -threshold_pct."""
+        mocks.get_price.return_value = 95.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 1
+
+    @pytest.mark.anyio
+    async def test_sustained_condition_does_not_refire_every_tick(self, db_session, mocks):
+        """D-05's entire dedup mechanism — no cooldown window exists anywhere."""
+        mocks.get_price.side_effect = [100.0, 93.0, 93.1]
+        rule = await _seed_rule(
+            db_session, AlertRuleType.PRICE_MOVE, {"threshold_pct": 5.0, "direction": "down"}
+        )
+
+        await evaluate_all_rules(db_session)  # tick 1: seeds baseline 100.0
+        await evaluate_all_rules(db_session)  # tick 2: 93.0 vs 100.0 -> fires, rolls to 93.0
+        await evaluate_all_rules(db_session)  # tick 3: 93.1 vs 93.0 -> +0.1%, no fire
+
+        assert await _count_events(db_session, rule.id) == 1
+
+    @pytest.mark.anyio
+    async def test_price_fetch_failure_leaves_baseline_untouched(self, db_session, mocks):
+        mocks.get_price.return_value = None
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            state={"last_price": 100.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 0
+        reloaded = await _reload(db_session, AlertRule, rule.id)
+        assert reloaded.state["last_price"] == 100.0
+        assert reloaded.state["last_checked_at"] is not None
+
+    @pytest.mark.anyio
+    async def test_zero_or_negative_stored_baseline_is_reseeded_not_divided_by(
+        self, db_session, mocks
+    ):
+        mocks.get_price.return_value = 50.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            state={"last_price": 0.0},
+        )
+
+        fired = await evaluate_all_rules(db_session)
+
+        assert fired == 0
+        reloaded = await _reload(db_session, AlertRule, rule.id)
+        assert reloaded.state["last_price"] == 50.0
+
+    @pytest.mark.anyio
+    async def test_unknown_direction_is_logged_and_skipped(self, db_session, mocks, caplog):
+        mocks.get_price.return_value = 93.0
+        rule = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "sideways"},
+            state={"last_price": 100.0},
+        )
+        # Captured before the call — the dispatcher's per-rule rollback on
+        # the ValueError expires this instance's attributes.
+        rule_id = rule.id
+
+        # tests/db/test_migrations.py runs alembic.config.Config, whose
+        # fileConfig() call (alembic.ini has a [loggers] section) disables
+        # every pre-existing logger not named in that ini — including this
+        # module's — when the full suite runs test_migrations.py before
+        # this test. A disabled logger's .warning() calls become no-ops
+        # regardless of caplog.at_level, so re-enable it explicitly rather
+        # than depending on suite run order.
+        target_logger = logging.getLogger("app.services.alert_evaluation_service")
+        previously_disabled = target_logger.disabled
+        target_logger.disabled = False
+        try:
+            with caplog.at_level(
+                logging.WARNING, logger="app.services.alert_evaluation_service"
+            ):
+                fired = await evaluate_all_rules(db_session)
+        finally:
+            target_logger.disabled = previously_disabled
+
+        assert fired == 0
+        assert await _count_events(db_session, rule_id) == 0
+        assert any("evaluation failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# TestStatePersistence
+# ---------------------------------------------------------------------------
+
+
+class TestStatePersistence:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "rule_type,config,expected_key",
+        [
+            (AlertRuleType.NEW_FILING, {}, "last_seen_accession"),
+            (AlertRuleType.PRICE_MOVE, {"threshold_pct": 5.0, "direction": "down"}, "last_price"),
+            (AlertRuleType.SCHEDULED, {"cadence": "daily"}, "last_checked_at"),
+        ],
+        ids=["new_filing", "price_move", "scheduled"],
+    )
+    async def test_state_survives_commit_for_each_rule_type(
+        self, db_session, mocks, rule_type, config, expected_key
+    ):
+        mocks.edgar_get.return_value = _efts_response(adsh="0009-X")
+        mocks.get_price.return_value = 100.0
+        rule = await _seed_rule(db_session, rule_type, config)
+
+        await evaluate_all_rules(db_session)
+
+        reloaded = await _reload(db_session, AlertRule, rule.id)
+        assert reloaded.state is not None
+        assert reloaded.state.get(expected_key) is not None
+
+    @pytest.mark.anyio
+    async def test_state_write_is_a_new_dict_not_an_in_place_mutation(self, db_session, mocks):
+        """Production-side counterpart to plan 11-01's model-level test.
+
+        If a state write mutated the existing dict in place, SQLAlchemy would
+        not mark the attribute dirty and the second value would silently
+        fail to persist.
+        """
+        mocks.get_price.side_effect = [100.0, 105.0]
+        rule = await _seed_rule(
+            db_session, AlertRuleType.PRICE_MOVE, {"threshold_pct": 50.0, "direction": "down"}
+        )
+
+        await evaluate_all_rules(db_session)
+        first_reloaded = await _reload(db_session, AlertRule, rule.id)
+        first_checked = first_reloaded.state["last_checked_at"]
+
+        await evaluate_all_rules(db_session)
+        second_reloaded = await _reload(db_session, AlertRule, rule.id)
+        second_checked = second_reloaded.state["last_checked_at"]
+
+        assert second_checked != first_checked
+
+    @pytest.mark.anyio
+    async def test_state_does_not_leak_across_rules(self, db_session, mocks):
+        mocks.get_price.side_effect = [100.0, 200.0]
+        rule_a = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            ticker="AAPL",
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        )
+        rule_b = await _seed_rule(
+            db_session,
+            AlertRuleType.PRICE_MOVE,
+            {"threshold_pct": 5.0, "direction": "down"},
+            ticker="MSFT",
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        )
+
+        rule_a_id, rule_b_id = rule_a.id, rule_b.id
+
+        await evaluate_all_rules(db_session)
+
+        a_price = (await _reload(db_session, AlertRule, rule_a_id)).state["last_price"]
+        b_price = (await _reload(db_session, AlertRule, rule_b_id)).state["last_price"]
+        assert a_price == 100.0
+        assert b_price == 200.0
