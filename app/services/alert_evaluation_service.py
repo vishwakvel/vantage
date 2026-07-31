@@ -215,23 +215,164 @@ def _evaluate_scheduled(
     return None
 
 
+async def _newest_filing_hit(ticker: str) -> dict | None:
+    """Return the newest EFTS hit for *ticker*, or ``None`` (D-02).
+
+    Issues the SAME EFTS full-text-search query ``ingestion_service.py``
+    already uses for ingestion, narrowed to a 90-day (``EFTS_LOOKBACK_DAYS``)
+    window rather than ingestion_service's 3-year window — this query only
+    needs to answer "what is the most recent filing right now", so a
+    narrower window means a smaller response per rule per tick. Does NOT add
+    a new EDGAR endpoint, a ``sort`` parameter, or CIK storage.
+
+    EFTS orders hits by relevance, not date, so the newest hit is selected
+    deterministically in Python: the hit whose ``_source["file_date"]``
+    string is lexicographically greatest (ISO ``YYYY-MM-DD`` sorts
+    correctly as plain text), falling back to ``_source["period_ending"]``
+    when ``file_date`` is absent on every hit.
+    """
+    now = datetime.now(timezone.utc)
+    startdt = (now - timedelta(days=EFTS_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    enddt = now.strftime("%Y-%m-%d")
+
+    search_resp = await edgar_client.get(
+        "/LATEST/search-index",
+        params={
+            "q": f'"{ticker}"',
+            "forms": "10-K,10-Q",
+            "dateRange": "custom",
+            "startdt": startdt,
+            "enddt": enddt,
+        },
+    )
+    search_resp.raise_for_status()
+    data = search_resp.json()
+    hits = data.get("hits", {}).get("hits", [])
+
+    if not hits:
+        return None
+
+    def _sort_key(hit: dict) -> str:
+        source = hit.get("_source", {})
+        return source.get("file_date") or source.get("period_ending") or ""
+
+    return max(hits, key=_sort_key)
+
+
 async def _evaluate_new_filing(
     rule: AlertRule, ticker: str, now: datetime
 ) -> str | None:
-    """Evaluate a NEW_FILING rule (D-02): stub — implemented in Task 2."""
-    raise NotImplementedError
+    """Evaluate a NEW_FILING rule (D-02).
+
+    Seeds the cursor silently on first evaluation; fires exactly once per
+    newly observed accession thereafter. Any exception from the EDGAR call
+    propagates to the dispatcher's per-rule handler, which logs and rolls
+    back — matching ingestion_service.py's log/skip-never-raise contract,
+    applied at the tick level rather than the rule level.
+    """
+    hit = await _newest_filing_hit(ticker)
+
+    if hit is None:
+        rule.state = {**(rule.state or {}), "last_checked_at": now.isoformat()}
+        return None
+
+    source = hit.get("_source", {})
+    accession = source.get("adsh", "")
+    if not accession:
+        rule.state = {**(rule.state or {}), "last_checked_at": now.isoformat()}
+        return None
+
+    last_seen = (rule.state or {}).get("last_seen_accession")
+
+    if last_seen is None:
+        # D-02: first-ever evaluation seeds the cursor without notifying —
+        # otherwise every newly created NEW_FILING rule would immediately
+        # fire on whatever pre-existing filing happens to be newest.
+        rule.state = {
+            **(rule.state or {}),
+            "last_seen_accession": accession,
+            "last_checked_at": now.isoformat(),
+        }
+        return None
+
+    if accession != last_seen:
+        rule.state = {
+            **(rule.state or {}),
+            "last_seen_accession": accession,
+            "last_checked_at": now.isoformat(),
+        }
+        form_label = (
+            source.get("form")
+            or (source.get("root_forms") or [None])[0]
+            or "filing"
+        )
+        return f"New {form_label} filed for {ticker}"
+
+    rule.state = {**(rule.state or {}), "last_checked_at": now.isoformat()}
+    return None
 
 
 async def _evaluate_price_move(
     rule: AlertRule, ticker: str, now: datetime
 ) -> str | None:
-    """Evaluate a PRICE_MOVE rule (D-05, Phase 10 D-10): stub — implemented in Task 2."""
-    raise NotImplementedError
+    """Evaluate a PRICE_MOVE rule (D-05, implementing Phase 10 D-10).
 
+    The reference price rolls forward on every tick whether or not the
+    rule fired — this single behaviour is D-05's entire dedup/re-arm
+    mechanism, so a sustained condition (price still down 6% an hour
+    later) cannot re-notify on every tick with no separate cooldown
+    window needed anywhere in this feature.
+    """
+    price = await live_price_source.get_current_price(ticker)
+    if price is None:
+        rule.state = {**(rule.state or {}), "last_checked_at": now.isoformat()}
+        return None
 
-async def _newest_filing_hit(ticker: str) -> dict | None:
-    """Return the newest EFTS hit for *ticker*, or ``None``: stub — implemented in Task 2."""
-    raise NotImplementedError
+    threshold_pct = float(rule.config["threshold_pct"])
+    direction = rule.config["direction"]
+
+    state = rule.state or {}
+    last_price = state.get("last_price")
+    if not isinstance(last_price, (int, float)) or last_price <= 0:
+        # First evaluation (or a corrupted/absent baseline) seeds the
+        # reference price — mirrors D-02's seeding rule for NEW_FILING.
+        rule.state = {
+            **(rule.state or {}),
+            "last_price": price,
+            "last_checked_at": now.isoformat(),
+        }
+        return None
+
+    pct_change = (price - last_price) / last_price * 100.0
+
+    if direction == "up":
+        fired = pct_change >= threshold_pct
+    elif direction == "down":
+        fired = pct_change <= -threshold_pct
+    elif direction == "either":
+        fired = abs(pct_change) >= threshold_pct
+    else:
+        # Data drift: validate_rule_config already guarantees a member of
+        # PRICE_MOVE_DIRECTIONS at creation time, so an unrecognised
+        # direction here means data drift, not a user error — raise so the
+        # dispatcher logs it rather than silently never firing.
+        raise ValueError(f"unrecognised PRICE_MOVE direction: {direction!r}")
+
+    # ALWAYS roll the baseline forward, fired or not (D-05).
+    rule.state = {
+        **(rule.state or {}),
+        "last_price": price,
+        "last_checked_at": now.isoformat(),
+    }
+
+    if not fired:
+        return None
+
+    verb = "rose" if pct_change >= 0 else "dropped"
+    return (
+        f"{ticker} {verb} {abs(pct_change):.1f}% to ${price:.2f} "
+        f"(threshold {threshold_pct:g}%, direction: {direction})"
+    )
 
 
 __all__ = [
