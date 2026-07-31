@@ -435,3 +435,123 @@ body {
   align-items: flex-end;
   gap: var(--space-sm);
 }
+
+/* Phase 11 — Notification bell/dropdown (NotificationBell.tsx) and
+   per-ticker Alert History (AlertHistory.tsx). Every value below reuses the
+   existing spacing/typography/color tokens declared in :root above. */
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.page-header .heading {
+  margin: 0;
+}
+
+.notification-bell {
+  position: relative;
+  display: inline-flex;
+}
+
+.notification-bell-button {
+  background: transparent;
+  border: none;
+  padding: var(--space-xs);
+  cursor: pointer;
+  color: var(--color-accent);
+  line-height: 0;
+}
+
+.notification-bell-button:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  padding: 2px var(--space-xs);
+  background: var(--color-accent);
+  color: #FFFFFF;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+}
+
+.notification-dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 10;
+  min-width: 320px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--color-surface);
+  padding: var(--space-lg);
+  border-radius: 8px;
+}
+
+.notification-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.notification-item {
+  background: var(--color-bg);
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.notification-item-unread {
+  border-left: 3px solid var(--color-accent);
+}
+
+.notification-message {
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+.notification-time {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+.alert-history {
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-surface);
+}
+
+.alert-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.alert-history-item {
+  background: var(--color-bg);
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}

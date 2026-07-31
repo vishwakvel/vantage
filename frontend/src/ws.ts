@@ -1,4 +1,5 @@
 import { WS_BASE } from "./config";
+import type { NotificationEntry } from "./api";
 
 export interface AgentSnapshotEntry {
   agent_type: string;
@@ -62,6 +63,74 @@ export function connectProgress(
 
   socket.onclose = () => {
     handlers.onClose(sawTerminal);
+  };
+
+  return {
+    close: () => socket.close(),
+  };
+}
+
+/**
+ * WS->browser protocol for the notifications socket (WATCH-06, D-09). The
+ * server sends one `{"type": "snapshot", ...}` frame on connect, then zero
+ * or more `{"type": "notification", ...}` frames — one per
+ * `NotificationEntry`'s fields spread directly alongside `type`, rather than
+ * nested under a sub-object.
+ */
+export type NotificationMessage =
+  | { type: "snapshot"; notifications: NotificationEntry[]; unread_count: number }
+  | ({ type: "notification" } & NotificationEntry);
+
+export interface NotificationHandlers {
+  onSnapshot: (notifications: NotificationEntry[], unreadCount: number) => void;
+  onNotification: (notification: NotificationEntry) => void;
+  /**
+   * Called on WS close. Takes NO argument, unlike
+   * `ProgressHandlers.onClose(wasTerminal)` — this channel has no terminal
+   * event to distinguish an expected close from an unexpected one, so there
+   * is no `wasTerminal` flag to report.
+   */
+  onClose: () => void;
+}
+
+export interface NotificationConnection {
+  close: () => void;
+}
+
+/**
+ * Opens a native WebSocket to the long-lived notifications route and
+ * dispatches snapshot / notification messages to the supplied handlers.
+ *
+ * Three lifecycle divergences from `connectProgress`, so no future reader
+ * ports the wrong behaviour:
+ *   (a) it connects once per session at login rather than once per run;
+ *   (b) the server never closes it — it has no terminal event and the
+ *       listen loop never breaks (D-09);
+ *   (c) there is still no reconnection logic and no socket.io, matching the
+ *       existing convention — an unexpected close surfaces through
+ *       `onClose` for the component to render, never a silent retry.
+ */
+export function connectNotifications(
+  token: string,
+  handlers: NotificationHandlers,
+): NotificationConnection {
+  const url = `${WS_BASE}/ws/notifications?token=${encodeURIComponent(token)}`;
+  const socket = new WebSocket(url);
+
+  socket.onmessage = (event: MessageEvent<string>) => {
+    const message = JSON.parse(event.data) as NotificationMessage;
+    switch (message.type) {
+      case "snapshot":
+        handlers.onSnapshot(message.notifications, message.unread_count);
+        break;
+      case "notification":
+        handlers.onNotification(message);
+        break;
+    }
+  };
+
+  socket.onclose = () => {
+    handlers.onClose();
   };
 
   return {
