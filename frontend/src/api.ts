@@ -359,3 +359,103 @@ export async function toggleAlertRule(
   }
   return (await response.json()) as AlertRuleResponse;
 }
+
+/**
+ * A single alert event, delivered over both REST and the `/ws/notifications`
+ * socket (WATCH-06/07). This is the browser-side mirror of
+ * `app/api/v1/notifications.py::NotificationResponse` and of
+ * `app/services/notification_publisher.py::notification_payload` — a field
+ * added on the server must be added here or it is silently dropped.
+ */
+export interface NotificationEntry {
+  id: string;
+  alert_rule_id: string;
+  message: string;
+  triggered_at: string;
+  read: boolean;
+}
+
+/**
+ * Shape returned by `GET /notifications` (matches
+ * `app/api/v1/notifications.py::NotificationListResponse`). `unread_count`
+ * is the caller's true unread total and is NOT capped by the 50-row
+ * `notifications` window, so the bell badge stays accurate past 50.
+ */
+export interface NotificationListResponse {
+  notifications: NotificationEntry[];
+  unread_count: number;
+}
+
+/**
+ * Shape returned by the bulk mark-read route (matches
+ * `app/api/v1/notifications.py::MarkReadResponse`).
+ */
+export interface MarkReadResponse {
+  marked: number;
+}
+
+/**
+ * Shape returned by `GET /notifications/history/{entryId}` (matches
+ * `app/api/v1/notifications.py::AlertHistoryResponse`).
+ */
+export interface AlertHistoryResponse {
+  ticker: string;
+  events: NotificationEntry[];
+}
+
+/**
+ * GET /notifications — WATCH-06's durable layer. Returns the caller's most
+ * recent 50 events newest-first plus the uncapped unread count. An empty
+ * list is a normal 200, never a 404.
+ */
+export async function getNotifications(
+  token: string,
+): Promise<NotificationListResponse> {
+  const response = await fetch(`${API_BASE}/notifications`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Get notifications failed with status ${response.status}`);
+  }
+  return (await response.json()) as NotificationListResponse;
+}
+
+/**
+ * Fires the bulk mark-read action (D-10) when the dropdown opens. There is
+ * no per-item mark-read counterpart anywhere in this API. The route takes
+ * no request body, so none is sent.
+ */
+export async function markNotificationsRead(
+  token: string,
+): Promise<MarkReadResponse> {
+  const response = await fetch(`${API_BASE}/notifications/mark-read`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Mark notifications read failed with status ${response.status}`);
+  }
+  return (await response.json()) as MarkReadResponse;
+}
+
+/**
+ * GET /notifications/history/{entryId} — WATCH-07. Returns the most recent
+ * 50 events for that watchlisted ticker (D-08 — no pagination exists, by
+ * decision); includes events from alert rules the user has since disabled
+ * (D-07). A non-owned or unknown `entryId` answers 404, which surfaces here
+ * as a thrown error the caller maps to its error state.
+ */
+export async function getAlertHistory(
+  entryId: string,
+  token: string,
+): Promise<AlertHistoryResponse> {
+  const response = await fetch(`${API_BASE}/notifications/history/${entryId}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Get alert history failed with status ${response.status}`);
+  }
+  return (await response.json()) as AlertHistoryResponse;
+}
