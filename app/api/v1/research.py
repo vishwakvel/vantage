@@ -71,6 +71,21 @@ T-03-06, T-06-07-IDOR, T-06-07-AUTHZ, T-06-07-DISPATCH):
   ``user_id`` arguments passed to ``run_research_task.delay(...)`` are
   derived exclusively from the ownership-verified plan and the authenticated
   user — never from the request body.
+
+Plan-scoped external-API counter (D-05, OBS-02, T-12-06-KEYINJ,
+T-12-06-XREQ): immediately after the new ``ResearchPlan`` row is committed
+in the resolved-tickers branch, this module sets the plan's id
+(``str(plan.id)``) into the ambient plan-id scope (see
+``app.services.api_call_counter``) before the ingestion loop runs. The
+value is always a server-generated UUID from a row this handler just
+wrote — never request-supplied input — so it carries no injection surface.
+Downstream, ``edgar_client.get``/``get_archive`` resolve this scope to
+attribute their EDGAR requests to the same Redis counter key
+(``research:api-calls:{plan_id}``) that the later Celery research task
+reads when assembling the memo's cost
+total. The scope is a per-request ``ContextVar``, so FastAPI's per-request
+context isolation prevents it from leaking between concurrent requests; no
+explicit teardown is added because an unset scope is already a safe no-op.
 """
 
 from __future__ import annotations
@@ -94,6 +109,7 @@ from app.db.models import (
     ResearchRequest,
     User,
 )
+from app.services.api_call_counter import set_current_plan_id
 from app.services.chat_service import answer_chat_turn
 from app.workers.tasks import run_research_task
 
@@ -394,6 +410,11 @@ async def create_research_request(
         )
         session.add(plan)
         await session.commit()
+
+        # D-05/OBS-02: put this plan's id into the ambient counter scope
+        # before the ingestion loop below runs, so EDGAR requests made
+        # during it are attributed to this plan (RESEARCH.md Pitfall 3).
+        set_current_plan_id(str(plan.id))
 
         # Non-fatal ingestion trigger — never raise on failure (mirrors
         # INGEST-04's source_warnings-not-5xx convention).
