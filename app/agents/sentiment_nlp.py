@@ -217,9 +217,10 @@ async def sentiment_nlp_node(state: dict[str, Any]) -> dict[str, Any]:
                     "sentiment_status": task.status.value,
                 }
 
-            narrative = await call_groq(
+            groq_result = await call_groq(
                 _build_prompt(ticker, articles, papers), max_tokens=_MAX_TOKENS
             )
+            narrative = groq_result.text
             citations = [_build_article_citation(a) for a in articles] + [
                 _build_paper_citation(p) for p in papers
             ]
@@ -249,6 +250,8 @@ async def sentiment_nlp_node(state: dict[str, Any]) -> dict[str, Any]:
                     completeness=completeness,
                     missing_fields=missing_fields,
                     output=output,
+                    prompt_tokens=groq_result.prompt_tokens,
+                    completion_tokens=groq_result.completion_tokens,
                 )
             )
             await session.commit()
