@@ -4,7 +4,7 @@ sqlalchemy[asyncio]==2.0.30
 asyncpg==0.29.0
 alembic==1.13.1
 pydantic[email]==2.13.4
-pydantic-settings==2.2.1
+pydantic-settings==2.14.2
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 redis[asyncio]==5.0.4
@@ -19,3 +19,7 @@ groq==1.5.0
 yfinance==1.5.1
 json-repair==0.61.2
 scikit-learn==1.9.0
+langsmith==0.10.15
+ragas==0.4.3
+rapidfuzz==3.14.5
+langchain-community==0.4.1
