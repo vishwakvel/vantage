@@ -9,6 +9,8 @@ Tests verify:
   - importing this module never triggers Settings or any network call
 """
 
+from unittest.mock import AsyncMock, patch
+
 import httpx
 import pytest
 
@@ -143,6 +145,101 @@ async def test_get_recent_articles_empty_key_raises_before_network(monkeypatch) 
         await client.get_recent_articles("AAPL")
 
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# increment_api_call_count instrumentation (OBS-02, D-05, 12-07-PLAN.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_get_recent_articles_increments_counter_once(monkeypatch) -> None:
+    """A get_recent_articles call that issues a request awaits
+    increment_api_call_count exactly once."""
+    monkeypatch.setenv("NEWS_API_KEY", "test-key-123")
+
+    client = NewsAPIClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"articles": []})
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=NEWS_API_BASE_URL,
+    )
+
+    with patch(
+        "app.services.news_client.increment_api_call_count", new_callable=AsyncMock
+    ) as mock_increment:
+        await client.get_recent_articles("AAPL")
+
+    await client.close()
+
+    mock_increment.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_get_recent_articles_no_key_awards_zero_increments(monkeypatch) -> None:
+    """The no-API-key early-return branch performs zero increments — no
+    request was made, so no call happened to count."""
+    monkeypatch.delenv("NEWS_API_KEY", raising=False)
+
+    client = NewsAPIClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("network call should never happen with empty key")
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=NEWS_API_BASE_URL,
+    )
+
+    with patch(
+        "app.services.news_client.increment_api_call_count", new_callable=AsyncMock
+    ) as mock_increment:
+        with pytest.raises(ValueError, match="NEWS_API_KEY not set"):
+            await client.get_recent_articles("AAPL")
+
+    await client.close()
+
+    mock_increment.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_get_recent_articles_return_value_unchanged_when_counter_backend_fails(
+    monkeypatch,
+) -> None:
+    """A failing counter backend (e.g. Redis down) never changes
+    get_recent_articles's return value — increment_api_call_count is
+    fail-soft by construction (plan 12-03)."""
+    from app.services.api_call_counter import set_current_plan_id
+
+    monkeypatch.setenv("NEWS_API_KEY", "test-key-123")
+    set_current_plan_id("plan-counter-fail-news")
+
+    client = NewsAPIClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_CANNED_ARTICLES_PAYLOAD)
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=NEWS_API_BASE_URL,
+    )
+
+    try:
+        with patch(
+            "app.services.api_call_counter._redis",
+            side_effect=ConnectionError("redis down"),
+        ):
+            articles = await client.get_recent_articles("AAPL")
+    finally:
+        set_current_plan_id(None)
+
+    await client.close()
+
+    assert len(articles) == 2
+    assert articles[0]["title"] == "Company X beats earnings expectations"
 
 
 # ---------------------------------------------------------------------------
