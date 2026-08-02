@@ -14,7 +14,11 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.services.api_call_counter import set_current_plan_id
+from app.services.api_call_counter import (
+    api_call_counter_key,
+    get_current_plan_id,
+    set_current_plan_id,
+)
 from app.services.edgar_client import (
     EDGAR_BASE_URL,
     EDGAR_USER_AGENT,
@@ -297,6 +301,45 @@ async def test_get_response_unchanged_by_instrumentation() -> None:
         result = await client.get("/search")
 
     assert result is fake_response
+
+
+# ---------------------------------------------------------------------------
+# POST /research ambient plan-id scope wiring (D-05, OBS-02, plan 12-06 Task 2)
+# ---------------------------------------------------------------------------
+
+
+def test_scope_holds_plan_id_after_set_current_plan_id() -> None:
+    """After the plan is created, the ambient plan-id scope holds the new
+    plan's id for the duration of the ingestion loop — mirrors the
+    ``set_current_plan_id(str(plan.id))`` call added to the resolved-tickers
+    branch of POST /research immediately after ``session.commit()``."""
+    fake_plan_id = "11111111-1111-1111-1111-111111111111"
+
+    assert get_current_plan_id() is None
+
+    set_current_plan_id(fake_plan_id)
+
+    assert get_current_plan_id() == fake_plan_id
+
+
+@pytest.mark.anyio
+async def test_edgar_calls_during_ingestion_resolve_same_plan_scoped_key() -> None:
+    """EDGAR calls made from inside ingest_ticker during the ingestion loop
+    resolve to the same plan-scoped Redis key the later Celery task will
+    read (``api_call_counter_key(plan_id)``), proving the scope set in
+    POST /research is what a downstream edgar_client.get() call picks up."""
+    fake_plan_id = "22222222-2222-2222-2222-222222222222"
+    set_current_plan_id(fake_plan_id)
+
+    client, _mock_get = _mock_client_for("get")
+
+    with patch("app.services.api_call_counter._redis") as mock_redis_ctor:
+        mock_redis = AsyncMock()
+        mock_redis_ctor.return_value = mock_redis
+        await client.get("/search")
+
+    mock_redis_ctor.assert_called_once()
+    mock_redis.incr.assert_awaited_once_with(api_call_counter_key(fake_plan_id))
 
 
 # ---------------------------------------------------------------------------
