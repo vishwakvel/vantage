@@ -12,7 +12,7 @@ Mirrors tests/services/test_edgar_client.py's httpx-mock boundary-test
 convention — no live network calls.
 """
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -143,6 +143,134 @@ async def test_empty_api_key_raises_value_error_before_network(
         await client.get_series_observations("FEDFUNDS")
 
     await client.close()
+
+
+# ---------------------------------------------------------------------------
+# increment_api_call_count instrumentation (OBS-02, D-05, 12-07-PLAN.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_get_series_observations_increments_counter_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One get_series_observations call that issues a request awaits
+    increment_api_call_count exactly once."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key-123")
+    client = FredClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_CANNED_OBSERVATIONS_PAYLOAD)
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=FRED_BASE_URL,
+    )
+
+    with patch(
+        "app.services.fred_client.increment_api_call_count", new_callable=AsyncMock
+    ) as mock_increment:
+        await client.get_series_observations("FEDFUNDS")
+
+    await client.close()
+
+    mock_increment.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_three_sequential_calls_award_three_increments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three sequential get_series_observations calls award three
+    increments — the per-series loop is counted per call, not per method
+    definition."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key-123")
+    client = FredClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_CANNED_OBSERVATIONS_PAYLOAD)
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=FRED_BASE_URL,
+    )
+
+    with patch(
+        "app.services.fred_client.increment_api_call_count", new_callable=AsyncMock
+    ) as mock_increment:
+        await client.get_series_observations("FEDFUNDS")
+        await client.get_series_observations("CPIAUCSL")
+        await client.get_series_observations("DGS10")
+
+    await client.close()
+
+    assert mock_increment.await_count == 3
+
+
+@pytest.mark.anyio
+async def test_missing_key_path_awards_zero_increments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A call short-circuited by a missing API key awards zero increments."""
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    client = FredClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no network call should be made with an empty key")
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=FRED_BASE_URL,
+    )
+
+    with patch(
+        "app.services.fred_client.increment_api_call_count", new_callable=AsyncMock
+    ) as mock_increment:
+        with pytest.raises(ValueError, match="FRED_API_KEY not set"):
+            await client.get_series_observations("FEDFUNDS")
+
+    await client.close()
+
+    mock_increment.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_return_value_unchanged_when_counter_backend_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing counter backend (e.g. Redis down) never changes
+    get_series_observations's return value — increment_api_call_count is
+    fail-soft by construction (plan 12-03)."""
+    from app.services.api_call_counter import set_current_plan_id
+
+    monkeypatch.setenv("FRED_API_KEY", "test-key-123")
+    set_current_plan_id("plan-counter-fail-fred")
+
+    client = FredClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_CANNED_OBSERVATIONS_PAYLOAD)
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=FRED_BASE_URL,
+    )
+
+    try:
+        with patch(
+            "app.services.api_call_counter._redis",
+            side_effect=ConnectionError("redis down"),
+        ):
+            result = await client.get_series_observations("FEDFUNDS")
+    finally:
+        set_current_plan_id(None)
+
+    await client.close()
+
+    assert result == [
+        {"date": "2026-06-01", "value": "5.33"},
+        {"date": "2026-04-01", "value": "5.31"},
+    ]
 
 
 # ---------------------------------------------------------------------------
