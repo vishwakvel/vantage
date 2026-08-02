@@ -149,3 +149,11 @@ None - no external service configuration required. Note: this worktree's local `
 ---
 *Phase: 12-observability-offline-eval*
 *Completed: 2026-08-02*
+
+## Self-Check: PASSED
+
+- FOUND: requirements/base.txt
+- FOUND: .planning/phases/12-observability-offline-eval/12-01-SUMMARY.md
+- FOUND: commit aa991cf (feat(12-01): pin langsmith, ragas, rapidfuzz and resolve dependency conflicts)
+- FOUND: commit 8f34173 (docs(12-01): complete pin-and-verify-deps plan)
+- All 5 requirements/base.txt pin greps returned 1 (langsmith, ragas, rapidfuzz, langchain-community, pydantic-settings)
