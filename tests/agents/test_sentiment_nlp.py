@@ -15,6 +15,12 @@ Coverage (AGENT-01, EXEC-04):
     FAILED and does not propagate the exception.
   - test_one_agenttask_and_one_agentoutput_persisted: exactly one AgentTask
     (agent_type "SentimentNLP") and one AgentOutput persisted for the plan.
+  - test_success_persists_token_counts: on the success path, the persisted
+    AgentOutput carries prompt_tokens/completion_tokens equal to the mocked
+    GroqResult's values (D-06).
+  - test_status_failed_both_empty persists NULL token counts (never calls
+    Groq); test_node_never_raises_on_llm_error persists NULL token counts on
+    the fallback AgentOutput.
 
 Mocks only at the SERVICE boundary — ``app.agents.sentiment_nlp.call_groq``,
 ``app.agents.sentiment_nlp.news_client.get_recent_articles``, and
@@ -22,7 +28,9 @@ Mocks only at the SERVICE boundary — ``app.agents.sentiment_nlp.call_groq``,
 httpx/Groq SDK directly (mirrors ``tests/agents/test_fundamental_analysis.py``'s
 boundary-mock convention). ``session_scope`` is patched with a tiny
 async-context-manager helper that yields the ``db_session`` fixture without
-closing it, since the fixture owns create_all/drop_all lifecycle.
+closing it, since the fixture owns create_all/drop_all lifecycle. ``call_groq``
+is mocked to return a ``GroqResult`` (post-12-05 contract), built via the
+``_make_groq_result`` helper below rather than a bare string.
 """
 
 import uuid
@@ -43,8 +51,27 @@ from app.db.models import (
     User,
 )
 from app.ingestion.section_constants import SECTION_SENTIMENT
+from app.services.groq_client import GroqResult
 
 pytestmark = pytest.mark.anyio
+
+
+def _make_groq_result(
+    text: str = "Sentiment: bullish\n\nAAPL shows strong momentum.",
+    prompt_tokens: int = 100,
+    completion_tokens: int = 50,
+) -> GroqResult:
+    """Build a ``GroqResult`` for mocking ``call_groq`` (post-12-05 contract)."""
+    return GroqResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        usage_metadata={
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +178,7 @@ async def test_status_success_both_sources(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.sentiment_nlp.call_groq",
-            AsyncMock(
-                return_value="Sentiment: bullish\n\nAAPL shows strong momentum."
-            ),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         result = await sentiment_nlp_node(state)
@@ -178,6 +203,8 @@ async def test_status_success_both_sources(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
+    assert output_row.prompt_tokens == 100
+    assert output_row.completion_tokens == 50
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +235,9 @@ async def test_status_partial_arxiv_missing(db_session: AsyncSession) -> None:
         patch(
             "app.agents.sentiment_nlp.call_groq",
             AsyncMock(
-                return_value="Sentiment: neutral\n\nMixed signals for AAPL."
+                return_value=_make_groq_result(
+                    text="Sentiment: neutral\n\nMixed signals for AAPL."
+                )
             ),
         ),
     ):
@@ -261,7 +290,7 @@ async def test_status_failed_both_empty(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.sentiment_nlp.call_groq",
-            AsyncMock(return_value="unused"),
+            AsyncMock(return_value=_make_groq_result(text="unused")),
         ) as mock_call_groq,
     ):
         result = await sentiment_nlp_node(state)
@@ -283,6 +312,8 @@ async def test_status_failed_both_empty(db_session: AsyncSession) -> None:
         )
     ).scalar_one()
     assert "no recent news" in output_row.missing_fields
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +365,8 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
         )
     ).scalar_one()
     assert "unavailable" in output_row.missing_fields
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -368,9 +401,7 @@ async def test_one_agenttask_and_one_agentoutput_persisted(
         ),
         patch(
             "app.agents.sentiment_nlp.call_groq",
-            AsyncMock(
-                return_value="Sentiment: bullish\n\nAAPL shows strong momentum."
-            ),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         await sentiment_nlp_node(state)
