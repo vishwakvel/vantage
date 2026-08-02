@@ -327,9 +327,9 @@ async def synthesis_node(state: dict[str, Any]) -> dict[str, Any]:
 
     try:
         prompt = _build_prompt(ticker, upstream_outputs)
-        take = await call_groq(prompt, max_tokens=_MAX_TOKENS)
+        groq_result = await call_groq(prompt, max_tokens=_MAX_TOKENS)
 
-        narrative, fenced = _split_narrative_and_json(take)
+        narrative, fenced = _split_narrative_and_json(groq_result.text)
         contradictions = _parse_contradictions(fenced)
 
         synthesis_output = {
@@ -344,6 +344,8 @@ async def synthesis_node(state: dict[str, Any]) -> dict[str, Any]:
                 completeness=AgentOutputCompleteness.FULL,
                 missing_fields=None,
                 output=synthesis_output,
+                prompt_tokens=groq_result.prompt_tokens,
+                completion_tokens=groq_result.completion_tokens,
             )
         )
         await session.commit()
