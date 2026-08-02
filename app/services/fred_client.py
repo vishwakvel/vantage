@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from app.services.api_call_counter import increment_api_call_count
+
 # ---------------------------------------------------------------------------
 # FRED configuration constants
 # ---------------------------------------------------------------------------
@@ -76,10 +78,19 @@ class FredClient:
 
         Raises:
             ValueError: If FRED_API_KEY is unset when a request is attempted.
+
+        Increments the external-API call counter (OBS-02) once for this
+        outbound request; the increment no-ops outside a research run
+        (D-05). MacroSector calls this once per entry in ``MACRO_SERIES``,
+        so one macro section legitimately contributes that many external
+        calls to the memo's total — that is intended, and is exactly the
+        behavior the per-call counting granularity exists to capture.
         """
         api_key = self._api_key()
         if not api_key:
             raise ValueError("FRED_API_KEY not set")
+
+        await increment_api_call_count()
 
         response = await self._client.get(
             "/series/observations",

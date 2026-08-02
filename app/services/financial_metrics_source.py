@@ -25,6 +25,8 @@ from typing import Any
 
 import yfinance
 
+from app.services.api_call_counter import increment_api_call_count
+
 # ---------------------------------------------------------------------------
 # Metric-name constants — the canonical vocabulary written into
 # FinancialMetric.metric_name (D-01).
@@ -92,18 +94,27 @@ class FinancialMetricsSource:
             dicts — the exact row shape plan 09-04's upsert consumes. Returns
             ``[]`` when every statement fetch fails or nothing could be
             derived; never raises.
+
+        Increments the external-API call counter (OBS-02) once per
+        underlying yfinance fetch — three increments per call, matching the
+        three real outbound interactions this method performs — not once
+        per method invocation. Each increment no-ops outside a research run
+        (D-05).
         """
         try:
+            await increment_api_call_count()
             income_stmt = await asyncio.to_thread(self._fetch_income_stmt, ticker)
         except Exception:
             income_stmt = None
 
         try:
+            await increment_api_call_count()
             balance_sheet = await asyncio.to_thread(self._fetch_balance_sheet, ticker)
         except Exception:
             balance_sheet = None
 
         try:
+            await increment_api_call_count()
             cashflow = await asyncio.to_thread(self._fetch_cashflow, ticker)
         except Exception:
             cashflow = None

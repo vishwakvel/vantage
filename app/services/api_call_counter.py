@@ -26,6 +26,18 @@ the ContextVar is scope only, never storage. Each entry point (``POST
 once at the start of its own lifecycle. A ``ContextVar`` is safe here because
 FastAPI gives each request its own context and Celery's prefork workers run
 one task per process at a time.
+
+What is instrumented, and what is deliberately not: every in-graph external
+data client that a research run touches is instrumented — ``edgar_client``,
+``news_client``, ``arxiv_client``, ``fred_client``,
+``financial_metrics_source``, and ``comparables_source`` (plans 12-06/12-07).
+``app/services/live_price_source.py`` is deliberately NOT instrumented. It
+is reached only from alert evaluation, never from a research run, so any
+increment there would either be an unscoped no-op forever (no plan id is
+ever in the ambient scope during an alert tick) or, worse, mis-attribute an
+alert tick's yfinance call to whatever plan happened to be running
+concurrently in another process. Leaving it uninstrumented is the correct,
+intentional choice, not an oversight.
 """
 
 from __future__ import annotations
