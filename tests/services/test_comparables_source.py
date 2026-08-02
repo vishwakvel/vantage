@@ -19,7 +19,7 @@ tests/services/test_edgar_client.py's boundary-mock convention).
 """
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -237,5 +237,143 @@ async def test_get_metrics_skips_peer_whose_fake_raises() -> None:
     ):
         metrics = await source.get_metrics(["SONO", "BADCO"])
 
+    assert len(metrics) == 1
+    assert metrics[0]["ticker"] == "SONO"
+
+
+# ---------------------------------------------------------------------------
+# increment_api_call_count instrumentation (OBS-02, D-05, 12-07-PLAN.md)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_peers_increments_once_per_fetch_actually_performed() -> None:
+    """get_peers increments once per underlying fetch it actually performs
+    — two on the happy path (info fetch + top-companies fetch)."""
+    source = ComparablesSource()
+
+    fake_info = {"AAPL": {"industryKey": "consumer-electronics"}}
+    top_companies = pd.DataFrame(
+        index=["aapl", "sono", "tbch"],
+        data={"name": ["x"] * 3},
+    )
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Industry",
+            new=lambda key: MagicMock(top_companies=top_companies),
+        ),
+        patch(
+            "app.services.comparables_source.increment_api_call_count",
+            new_callable=AsyncMock,
+        ) as mock_increment,
+    ):
+        await source.get_peers("AAPL")
+
+    assert mock_increment.await_count == 2
+
+
+async def test_get_peers_missing_industry_key_awards_only_the_info_fetch_increment() -> (
+    None
+):
+    """The branch that returns early without an industryKey performs
+    exactly one increment (the info fetch) and never reaches — or counts —
+    the second fetch."""
+    source = ComparablesSource()
+
+    fake_info = {"ZZZZ": {"sector": "Unknown"}}  # no industryKey
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.increment_api_call_count",
+            new_callable=AsyncMock,
+        ) as mock_increment,
+    ):
+        peers = await source.get_peers("ZZZZ")
+
+    assert peers == []
+    assert mock_increment.await_count == 1
+
+
+async def test_get_metrics_three_peers_awards_three_increments() -> None:
+    """get_metrics with three peer tickers awards exactly three
+    increments."""
+    source = ComparablesSource()
+
+    fake_info = {
+        "SONO": {"marketCap": 1, "trailingPE": 1, "profitMargins": 1, "totalRevenue": 1},
+        "TBCH": {"marketCap": 2, "trailingPE": 2, "profitMargins": 2, "totalRevenue": 2},
+        "AXIL": {"marketCap": 3, "trailingPE": 3, "profitMargins": 3, "totalRevenue": 3},
+    }
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.increment_api_call_count",
+            new_callable=AsyncMock,
+        ) as mock_increment,
+    ):
+        metrics = await source.get_metrics(["SONO", "TBCH", "AXIL"])
+
+    assert len(metrics) == 3
+    assert mock_increment.await_count == 3
+
+
+async def test_get_peers_and_get_metrics_return_values_unchanged_when_counter_backend_fails() -> (
+    None
+):
+    """A failing counter backend (e.g. Redis down) never changes get_peers's
+    or get_metrics's return values — increment_api_call_count is fail-soft
+    by construction (plan 12-03)."""
+    from app.services.api_call_counter import set_current_plan_id
+
+    source = ComparablesSource()
+
+    fake_info = {
+        "AAPL": {"industryKey": "consumer-electronics"},
+        "SONO": {
+            "marketCap": 1_000_000,
+            "trailingPE": 15.2,
+            "profitMargins": 0.08,
+            "totalRevenue": 2_000_000,
+        },
+    }
+    top_companies = pd.DataFrame(
+        index=["aapl", "sono", "tbch"],
+        data={"name": ["x"] * 3},
+    )
+
+    set_current_plan_id("plan-counter-fail-comparables")
+    try:
+        with (
+            patch(
+                "app.services.comparables_source.yfinance.Ticker",
+                new=_fake_ticker_factory(fake_info),
+            ),
+            patch(
+                "app.services.comparables_source.yfinance.Industry",
+                new=lambda key: MagicMock(top_companies=top_companies),
+            ),
+            patch(
+                "app.services.api_call_counter._redis",
+                side_effect=ConnectionError("redis down"),
+            ),
+        ):
+            peers = await source.get_peers("AAPL")
+            metrics = await source.get_metrics(["SONO"])
+    finally:
+        set_current_plan_id(None)
+
+    assert peers == ["SONO", "TBCH"]
     assert len(metrics) == 1
     assert metrics[0]["ticker"] == "SONO"
