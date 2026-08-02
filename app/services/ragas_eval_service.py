@@ -22,12 +22,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from ragas.dataset_schema import SingleTurnSample
 from ragas.metrics import NonLLMContextPrecisionWithReference, NonLLMContextRecall
 
-from app.eval.golden_set import GoldenCase
+from app.db.models import RagasEvalResult
+from app.eval.golden_set import GoldenCase, load_golden_set
 from app.ingestion.retriever import hybrid_retrieve
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +123,81 @@ async def score_case(case: GoldenCase, top_k: int = DEFAULT_TOP_K) -> RagasCaseS
     )
 
 
+async def evaluate_golden_set(
+    session: AsyncSession, top_k: int = DEFAULT_TOP_K
+) -> list[RagasCaseScore]:
+    """Score the whole golden set, persisting one row per case, and commit.
+
+    Mirrors ``alert_evaluation_service.evaluate_all_rules``'s session-in /
+    summary-out shape: the caller owns the session lifecycle; this function
+    does the work and commits once at the end.
+
+    One ``run_at`` timestamp is computed ONCE before the loop and reused for
+    every row so a pass is identifiable as one run. Each case is scored
+    inside a ``try/except Exception`` — one unscoreable case can never abort
+    the pass, mirroring ``synthesis._parse_contradictions``'s "skip one
+    malformed item, keep the rest" rule — and falls back to a
+    ``RagasCaseScore`` with both score fields ``None`` and
+    ``retrieved_count`` 0. A ``RagasEvalResult`` row is added for every case,
+    including failed ones.
+
+    ``load_golden_set()`` is deliberately called OUTSIDE that try/except: a
+    broken fixture is a developer error affecting the whole run, not a
+    per-case condition, so ``GoldenSetError`` propagates to the caller (the
+    Celery beat task added in a later plan owns the outer swallow-and-log).
+
+    Only a one-line info-level summary (case count, failure count) is
+    logged after the loop — no query text or per-case scores, which would be
+    noise on a daily job.
+    """
+    cases = load_golden_set()
+    run_at = datetime.now(UTC)
+
+    results: list[RagasCaseScore] = []
+    failed_count = 0
+
+    for case in cases:
+        try:
+            score = await score_case(case, top_k=top_k)
+        except Exception:
+            logger.exception("Failed to score golden-set case %s", case.case_id)
+            score = RagasCaseScore(
+                case_id=case.case_id,
+                query=case.query,
+                ticker=case.ticker,
+                context_precision=None,
+                context_recall=None,
+                retrieved_count=0,
+            )
+            failed_count += 1
+
+        results.append(score)
+        session.add(
+            RagasEvalResult(
+                run_at=run_at,
+                case_id=score.case_id,
+                query=score.query,
+                ticker=score.ticker,
+                context_precision=score.context_precision,
+                context_recall=score.context_recall,
+                retrieved_count=score.retrieved_count,
+            )
+        )
+
+    await session.commit()
+
+    logger.info(
+        "RAGAS golden-set eval run complete: %d case(s), %d failed to score",
+        len(cases),
+        failed_count,
+    )
+
+    return results
+
+
 __all__ = [
     "DEFAULT_TOP_K",
     "RagasCaseScore",
     "score_case",
+    "evaluate_golden_set",
 ]
