@@ -159,3 +159,64 @@ def test_two_plan_ids_derive_two_different_keys() -> None:
     from app.services.api_call_counter import api_call_counter_key
 
     assert api_call_counter_key("plan-a") != api_call_counter_key("plan-b")
+
+
+class TestCrossRunIsolationAndUnscopedNoOp:
+    """Pins the two properties D-05 exists to guarantee (RESEARCH.md Security
+    Domain: Redis counter key collision/leak across concurrent research
+    runs) — a naive global counter would violate both.
+    """
+
+    @pytest.mark.anyio
+    async def test_T_12_03_LEAK_two_concurrent_runs_increment_distinct_keys(
+        self,
+    ) -> None:
+        """Two distinct plan ids driven against one shared mock Redis must
+        target two distinct, non-constant keys — never a shared/global key.
+        """
+        from app.services.api_call_counter import (
+            api_call_counter_key,
+            increment_api_call_count,
+        )
+
+        shared_mock_redis = AsyncMock()
+        settings = _make_settings()
+
+        with patch(
+            "app.services.api_call_counter._redis",
+            return_value=shared_mock_redis,
+        ):
+            await increment_api_call_count(plan_id="run-alpha", settings=settings)
+            await increment_api_call_count(plan_id="run-beta", settings=settings)
+
+        incr_keys = [call.args[0] for call in shared_mock_redis.incr.await_args_list]
+        assert incr_keys == [
+            api_call_counter_key("run-alpha"),
+            api_call_counter_key("run-beta"),
+        ]
+        # Neither key is a shared/constant string — each is plan-id-derived.
+        assert len(set(incr_keys)) == 2
+        assert "research:api-calls:" not in incr_keys  # no bare/constant key
+
+    @pytest.mark.anyio
+    async def test_T_12_03_STRAY_unscoped_call_never_constructs_redis_client(
+        self,
+    ) -> None:
+        """When no plan id is resolvable, the module's ``_redis`` factory
+        itself must receive zero calls — not merely that ``incr`` went
+        unawaited. Once alert-evaluation-triggered EDGAR calls are
+        instrumented, an unscoped increment that still opened a Redis
+        connection would leak one connection per alert tick forever.
+        """
+        from app.services.api_call_counter import (
+            increment_api_call_count,
+            set_current_plan_id,
+        )
+
+        set_current_plan_id(None)
+        settings = _make_settings()
+
+        with patch("app.services.api_call_counter._redis") as mock_redis_factory:
+            await increment_api_call_count(settings=settings)
+
+        mock_redis_factory.assert_not_called()
