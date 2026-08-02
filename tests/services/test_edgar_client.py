@@ -9,17 +9,27 @@ Tests verify:
   - Required section constants are importable and non-empty
 """
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
+from app.services.api_call_counter import set_current_plan_id
 from app.services.edgar_client import (
     EDGAR_BASE_URL,
     EDGAR_USER_AGENT,
     EDGARClient,
     edgar_client,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_plan_id_scope():
+    """Reset the ambient plan-id scope before and after every test in this
+    module so a scope set by one test cannot leak into the next."""
+    set_current_plan_id(None)
+    yield
+    set_current_plan_id(None)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -173,6 +183,120 @@ def test_reset_edgar_client_replaces_both_httpx_clients() -> None:
     assert isinstance(mod.edgar_client._client, httpx.AsyncClient)
     assert isinstance(mod.edgar_client._archive_client, httpx.AsyncClient)
     assert str(mod.edgar_client._client.base_url) == EDGAR_BASE_URL
+
+
+# ---------------------------------------------------------------------------
+# Plan-scoped external-API call counter instrumentation (D-05, OBS-02)
+# ---------------------------------------------------------------------------
+
+
+def _mock_client_for(method_name: str) -> tuple[EDGARClient, AsyncMock]:
+    """Build an EDGARClient whose internal client for *method_name* is a
+    bare AsyncMock returning a fixed httpx.Response, so tests can assert on
+    call counts without a real network layer."""
+    client = EDGARClient()
+    fake_response = httpx.Response(200, json={"ok": True})
+    mock_get = AsyncMock(return_value=fake_response)
+    if method_name == "get":
+        client._client.get = mock_get  # type: ignore[method-assign]
+    else:
+        client._archive_client.get = mock_get  # type: ignore[method-assign]
+    return client, mock_get
+
+
+@pytest.mark.anyio
+async def test_get_increments_counter_when_plan_id_in_scope() -> None:
+    """One edgar_client.get(...) call results in exactly one
+    increment_api_call_count await when a plan id is in the ambient scope."""
+    set_current_plan_id("plan-123")
+    client, _mock_get = _mock_client_for("get")
+
+    with patch(
+        "app.services.edgar_client.increment_api_call_count",
+        new=AsyncMock(),
+    ) as mock_incr:
+        await client.get("/search")
+
+    mock_incr.assert_awaited_once_with()
+
+
+@pytest.mark.anyio
+async def test_get_archive_increments_counter_when_plan_id_in_scope() -> None:
+    """One edgar_client.get_archive(...) call results in exactly one
+    increment_api_call_count await when a plan id is in the ambient scope."""
+    set_current_plan_id("plan-123")
+    client, _mock_get = _mock_client_for("get_archive")
+
+    with patch(
+        "app.services.edgar_client.increment_api_call_count",
+        new=AsyncMock(),
+    ) as mock_incr:
+        await client.get_archive("/Archives/edgar/data/1/1/doc.htm")
+
+    mock_incr.assert_awaited_once_with()
+
+
+@pytest.mark.anyio
+async def test_get_no_redis_connection_when_no_plan_id_in_scope() -> None:
+    """With no plan id in the ambient scope, edgar_client.get() causes no
+    Redis client to be constructed — increment_api_call_count's real
+    implementation is used (not mocked) to prove the no-op path end to end."""
+    set_current_plan_id(None)
+    client, _mock_get = _mock_client_for("get")
+
+    with patch("app.services.api_call_counter._redis") as mock_redis_ctor:
+        await client.get("/search")
+
+    mock_redis_ctor.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_get_archive_no_redis_connection_when_no_plan_id_in_scope() -> None:
+    """With no plan id in the ambient scope, edgar_client.get_archive()
+    causes no Redis client to be constructed."""
+    set_current_plan_id(None)
+    client, _mock_get = _mock_client_for("get_archive")
+
+    with patch("app.services.api_call_counter._redis") as mock_redis_ctor:
+        await client.get_archive("/Archives/edgar/data/1/1/doc.htm")
+
+    mock_redis_ctor.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_get_returns_response_even_when_counter_backend_fails() -> None:
+    """A failing counter backend (Redis raising) does not prevent get() from
+    returning the httpx response — fail-soft end to end through the REAL
+    increment_api_call_count (not mocked), exercising its own internal
+    try/except exactly as production would."""
+    set_current_plan_id("plan-123")
+    client, mock_get = _mock_client_for("get")
+
+    with patch(
+        "app.services.api_call_counter._redis",
+        side_effect=RuntimeError("redis down"),
+    ):
+        response = await client.get("/search")
+
+    assert response is mock_get.return_value
+    mock_get.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_get_response_unchanged_by_instrumentation() -> None:
+    """The returned httpx.Response object is unchanged — the instrumentation
+    adds no wrapping and no mutation."""
+    set_current_plan_id("plan-123")
+    client, mock_get = _mock_client_for("get")
+    fake_response = mock_get.return_value
+
+    with patch(
+        "app.services.edgar_client.increment_api_call_count",
+        new=AsyncMock(),
+    ):
+        result = await client.get("/search")
+
+    assert result is fake_response
 
 
 # ---------------------------------------------------------------------------
