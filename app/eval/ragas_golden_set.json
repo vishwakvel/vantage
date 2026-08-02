@@ -1,0 +1,122 @@
+[
+  {
+    "case_id": "aapl-risk-01",
+    "query": "Has Apple's most recent 10-Q identified any material changes to its previously disclosed risk factors?",
+    "ticker": "AAPL",
+    "user_id": "",
+    "provenance": "verbatim-edgar",
+    "reference_contexts": [
+      "Risk Factors The Company’s business, reputation, results of operations, financial condition and stock price can be affected by a number of factors, whether currently known or unknown, including those described in Part I, Item 1A of the 2024 Form 10-K and Part II, Item 1A of the Forms 10-Q for the quarters ended December 28, 2024 (the “first quarter 2025 Form 10-Q”) and March 29, 2025 (the “second quarter 2025 Form 10-Q”), in each case under the heading “Risk Factors.” When any one or more of these risks materialize from time to time, the Company’s business, reputation, results of operations, financial condition and stock price can be materially and adversely affected. Except for the risk factors disclosed in Part II, Item 1A of the first quarter 2025 Form 10-Q and the second quarter 2025 Form 10-Q , which are hereby incorporated by reference into this Part II, Item 1A of this Form 10-Q, there have been no material changes to the Company’s risk factors since the 2024 Form 10-K."
+    ]
+  },
+  {
+    "case_id": "aapl-mda-01",
+    "query": "What does management identify as the primary drivers of Apple's Services and Products segment revenue growth?",
+    "ticker": "AAPL",
+    "user_id": "",
+    "provenance": "authored",
+    "reference_contexts": [
+      "Services net sales grew year-over-year, reflecting continued growth in the installed base of active devices and increased revenue per user across the App Store, advertising, AppleCare, cloud, and payment services offerings. Products net sales growth for the period was primarily driven by iPhone, which benefited from a favorable year-over-year comparison and stronger demand in certain international markets, partially offset by a less favorable mix of iPhone models sold. Gross margin percentage for the period was relatively flat, as cost improvements in commodity components and favorable currency movements were largely offset by a shift in mix toward Services, which carries a higher gross margin than Products, and by continued pricing pressure in certain markets."
+    ]
+  },
+  {
+    "case_id": "aapl-business-01",
+    "query": "What deferred revenue balance does Apple disclose, and does it note any geographic concentration in iPhone revenue?",
+    "ticker": "AAPL",
+    "user_id": "",
+    "provenance": "verbatim-edgar",
+    "reference_contexts": [
+      "10, “Segment Information” for the three months ended December 27, 2025 and December 28, 2024, except in Greater China, where iPhone revenue represented a moderately higher proportion of net sales. As of December 27, 2025 and September 27, 2025, the Company had total deferred revenue of $ 14.3 billion and $ 13.7 billion, respectively. As of December 27, 2025, the Company expects 66 % of total deferred revenue to be realized in less than a year, 23 % within one-to-two years, 9 % within two-to-three years and 2 % in greater than three years."
+    ]
+  },
+  {
+    "case_id": "aapl-legal-01",
+    "query": "What was the outcome of the Epic Games antitrust litigation against Apple over App Store in-app purchasing rules?",
+    "ticker": "AAPL",
+    "user_id": "",
+    "provenance": "verbatim-edgar",
+    "reference_contexts": [
+      "Legal Proceedings Epic Games Epic Games, Inc. (“Epic”) filed a lawsuit in the U.S. District Court for the Northern District of California (the “District Court”) against the Company alleging violations of federal and state antitrust laws and California’s unfair competition law based upon the Company’s operation of its App Store ® . On September 10, 2021, the District Court ruled in favor of the Company with respect to nine out of the ten counts included in Epic’s claim. The District Court found that certain provisions of the Company’s App Store Review Guidelines violate California’s unfair competition law and issued an injunction enjoining the Company from prohibiting developers from including in their apps external links that direct customers to purchasing mechanisms other than Apple in-app purchasing. The injunction applies to apps on the U.S. storefront of the iOS and iPadOS ® App Store. On April 24, 2023, the U.S. Court of Appeals for the Ninth Circuit (the “Circuit Court”) affirmed the District Court’s ruling."
+    ]
+  },
+  {
+    "case_id": "msft-risk-01",
+    "query": "What execution risks does Microsoft identify around its cloud-based and AI services strategy?",
+    "ticker": "MSFT",
+    "user_id": "",
+    "provenance": "verbatim-edgar",
+    "reference_contexts": [
+      "Some open source products mimic the features and functionality of our products. The competitive pressures described above may cause decreased sales volumes, price reductions, and/or increased operating costs, such as for research and development, marketing, and sales incentives, which could adversely affect our financial condition and results of operations. Our focus on cloud-based and AI services presents execution and competitive risks. We are incurring significant costs to build and maintain infrastructure to support cloud-based and AI services, reducing operating margins. Whether we succeed in cloud-based and AI services depends on our execution in several areas, including: • Continuing to bring to market compelling cloud-based and AI services and products that generate increasing traffic and market share. • Maintaining the utility, compatibility, and performance of our cloud-based and AI services on the growing array of computing devices, including PCs, smartphones, tablets, gaming consoles, and other devices. • Continuing to enhance the attractiveness of our cloud platforms to third-party developers. • Ensuring our cloud-based services meet the reliability expectations and specific requirements of our customers and maintain the security of their data as well as help them meet their own compliance needs. • Making our suite of cloud-based services platform-agnostic, available on a wide range of devices and ecosystems, including those of our competitors."
+    ]
+  },
+  {
+    "case_id": "msft-mda-01",
+    "query": "What does Microsoft's MD&A disclose about its strategic partnership and revenue-sharing arrangement with OpenAI?",
+    "ticker": "MSFT",
+    "user_id": "",
+    "provenance": "verbatim-edgar",
+    "reference_contexts": [
+      "Industry Trends and Opportunities Our industry is dynamic and highly competitive, with frequent changes in both technologies and business models. Each industry shift is an opportunity to conceive new products, new technologies, or new ideas that can further transform the industry and our business. At Microsoft, we push the boundaries of what is possible through a broad range of research and development activities that seek to identify and address the changing demands of customers and users, industry trends, and competitive forces. Microsoft and OpenAI maintain a long-term strategic partnership originally established in 2019. Microsoft is a major investor in OpenAI, and the companies have reciprocal revenue-sharing arrangements. We hold rights to OpenAI’s intellectual property, including models and infrastructure, for integration into our products. The OpenAI API is exclusive to Azure, runs on Azure, and is available through the Azure OpenAI Service. We also have a right of first refusal on OpenAI's new capacity needs."
+    ]
+  },
+  {
+    "case_id": "msft-business-01",
+    "query": "How does Microsoft describe its mission and core business focus areas in the Business section of its 10-K?",
+    "ticker": "MSFT",
+    "user_id": "",
+    "provenance": "verbatim-edgar",
+    "reference_contexts": [
+      "B USINESS GENERAL Microsoft is a technology company committed to making digital technology and artificial intelligence (“AI”) available broadly and doing so responsibly. Our mission is to empower every person and every organization on the planet to achieve more. We develop and support a broad portfolio of technology solutions for individuals and businesses, focusing on secure, trusted, and innovative platforms and tools that meet evolving customer needs across cloud computing, productivity and collaboration, and personal computing."
+    ]
+  },
+  {
+    "case_id": "msft-financials-01",
+    "query": "What market risks does Microsoft disclose exposure to under its Quantitative and Qualitative Disclosures About Market Risk?",
+    "ticker": "MSFT",
+    "user_id": "",
+    "provenance": "verbatim-edgar",
+    "reference_contexts": [
+      "QUANTITATIVE AND QUALITAT IVE DISCLOSURES ABOUT MARKET RISK RISKS We are exposed to economic risk from foreign exchange rates, interest rates, credit risk, and equity prices. We use derivatives instruments to manage these risks, however, they may still impact our consolidated financial statements. Foreign Currencies Certain forecasted transactions, assets, and liabilities are exposed to foreign currency risk. We monitor our foreign currency exposures daily to maximize the economic effectiveness of our foreign currency positions, including hedges. Principal currency exposures include the Euro, Japanese yen, British pound, Canadian dollar, and Australian dollar. Interest Rate Securities held in our fixed-income portfolio are subject to different interest rate risks based on their maturities. We manage the average maturity of the fixed-income portfolio to achieve economic returns that correlate to certain global fixed-income indices. Credit Our fixed-income portfolio is diversified and consists primarily of investment-grade securities. We manage credit exposures relative to broad-based indices to facilitate portfolio diversification. Equity Securities held in our equity investments portfolio are subject to price risk."
+    ]
+  },
+  {
+    "case_id": "tsla-risk-01",
+    "query": "How dependent is Tesla on Elon Musk continuing to serve as Chief Executive Officer?",
+    "ticker": "TSLA",
+    "user_id": "",
+    "provenance": "authored",
+    "reference_contexts": [
+      "We are highly dependent on the services of Elon Musk, our Chief Executive Officer. Although Mr. Musk spends significant time with Tesla and is highly active in our management, he does not devote his full time and attention to Tesla. Mr. Musk also currently serves as the Chief Executive Officer of other companies, including SpaceX and xAI, and has founded, invested in, or advises other technology companies. Although we have a limited replacement plan for our Chief Executive Officer, given his importance to our business, if Mr. Musk were unable or unwilling to continue serving as our Chief Executive Officer, or dedicated less of his time to Tesla, our business, prospects, and operating results could be materially and adversely affected."
+    ]
+  },
+  {
+    "case_id": "tsla-mda-01",
+    "query": "What drove the change in Tesla's automotive gross margin, and what does management expect for vehicle cost going forward?",
+    "ticker": "TSLA",
+    "user_id": "",
+    "provenance": "authored",
+    "reference_contexts": [
+      "Automotive gross margin decreased year-over-year, primarily due to reduced average selling prices resulting from pricing actions taken across our vehicle lineup to remain competitive and stimulate demand in a higher interest rate environment, partially offset by a reduction in cost per vehicle driven by manufacturing and logistics efficiencies, lower raw material costs, and design cost reductions at our newer manufacturing facilities. We expect our ability to reduce vehicle cost to continue as production ramps at Gigafactory Texas and Gigafactory Berlin-Brandenburg, though the pace of cost reduction may be affected by fluctuations in raw material and logistics pricing."
+    ]
+  },
+  {
+    "case_id": "tsla-business-01",
+    "query": "How does Tesla describe its manufacturing footprint and approach to in-house component production?",
+    "ticker": "TSLA",
+    "user_id": "",
+    "provenance": "authored",
+    "reference_contexts": [
+      "We design, develop, manufacture, sell, and lease high-performance fully electric vehicles and energy generation and storage systems, and offer services related to our products. We generally sell our vehicles directly to consumers, and continue to grow our sales and service locations globally. Our vehicle manufacturing facilities are located in Fremont, California; Gigafactory Nevada; Gigafactory New York; Gigafactory Shanghai; Gigafactory Texas; and Gigafactory Berlin-Brandenburg. We design and manufacture many of the key components for our vehicles in-house, including our battery packs, battery modules, and drive units, which we believe allows us to control cost, quality, and the pace of innovation across our products."
+    ]
+  },
+  {
+    "case_id": "tsla-financials-01",
+    "query": "What drove the change in Tesla's energy generation and storage segment revenue and gross margin?",
+    "ticker": "TSLA",
+    "user_id": "",
+    "provenance": "authored",
+    "reference_contexts": [
+      "Energy generation and storage revenue increased year-over-year, primarily driven by growth in Megapack deployments as we continued to ramp production at our dedicated Megapack factory, partially offset by a decrease in solar deployments. Energy generation and storage gross margin improved compared to the prior year period, reflecting a higher volume of Megapack deployments, cost reductions, and a more favorable product mix, partially offset by higher warranty and logistics costs associated with the increased deployment volume."
+    ]
+  }
+]
