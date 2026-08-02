@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app.eval.golden_set import (
+    ALLOWED_PROVENANCE,
     MIN_REFERENCE_CONTEXT_CHARS,
     GoldenCase,
     GoldenSetError,
@@ -185,3 +186,34 @@ def test_well_formed_fixture_loads_via_explicit_path(tmp_path: Path):
     assert loaded[0].case_id == "case-0"
     assert loaded[0].user_id == ""
     assert loaded[0].reference_contexts == (_LONG_PASSAGE,)
+
+
+# ---------------------------------------------------------------------------
+# Shipped-fixture test: locks the shape of the real ragas_golden_set.json in.
+# Named to match the "-k shipped" selector Task 1's verify command excluded.
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_golden_set_has_ten_to_twenty_cases_across_three_tickers():
+    cases = load_golden_set()
+
+    assert 10 <= len(cases) <= 20
+    assert sorted({case.ticker for case in cases}) == ["AAPL", "MSFT", "TSLA"]
+
+
+def test_shipped_golden_set_every_case_has_reference_context():
+    cases = load_golden_set()
+
+    assert len(cases) > 0
+    for case in cases:
+        assert len(case.reference_contexts) >= 1
+        for context in case.reference_contexts:
+            assert len(context) >= MIN_REFERENCE_CONTEXT_CHARS
+
+
+def test_shipped_golden_set_every_provenance_value_is_allowed():
+    cases = load_golden_set()
+
+    assert len(cases) > 0
+    for case in cases:
+        assert case.provenance in ALLOWED_PROVENANCE
