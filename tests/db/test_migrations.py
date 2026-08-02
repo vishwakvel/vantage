@@ -35,7 +35,9 @@ ASYNC_TEST_DB_URL = "postgresql+asyncpg://vantage:vantage@localhost:5433/vantage
 # financial metrics & anomaly detection); the 12th and 13th, watchlist_entries
 # and alert_rules, are added by revision 004 (plan 10-01, Phase 10 watchlist
 # and alert rules); the 14th, alert_events, is added by revision 005 (plan
-# 11-01, Phase 11 alert evaluation and notifications).
+# 11-01, Phase 11 alert evaluation and notifications); the 15th,
+# ragas_eval_results, is added by revision 006 (plan 12-02, Phase 12
+# observability & offline eval).
 EXPECTED_TABLES = frozenset(
     {
         "users",
@@ -52,6 +54,7 @@ EXPECTED_TABLES = frozenset(
         "watchlist_entries",
         "alert_rules",
         "alert_events",
+        "ragas_eval_results",
     }
 )
 
