@@ -308,6 +308,99 @@ async def test_call_groq_invokes_sdk_with_expected_args(
 
 
 # ---------------------------------------------------------------------------
+# LangSmith tracing — @traceable on call_groq, no-op when tracing is off
+# ---------------------------------------------------------------------------
+
+
+def test_call_groq_carries_langsmith_tracing() -> None:
+    """call_groq is wrapped by LangSmith's @traceable decorator.
+
+    Asserted via the decorator's own ``is_traceable_function`` marker check
+    rather than by string-matching source, per the plan's Test 1 wording.
+    """
+    from langsmith.run_helpers import is_traceable_function
+
+    assert is_traceable_function(call_groq) is True
+
+
+@pytest.mark.anyio
+async def test_call_groq_unaffected_when_langsmith_env_cleared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With every LangSmith-related env var cleared, call_groq still returns
+    the correct GroqResult and raises nothing."""
+    for var in (
+        "LANGSMITH_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_TRACING_V2",
+        "LANGCHAIN_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    mock_client = _make_mock_client(
+        content="hello", usage=_make_mock_usage(prompt_tokens=1, completion_tokens=1)
+    )
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    result = await call_groq("test prompt", max_tokens=10)
+
+    assert isinstance(result, GroqResult)
+    assert result.text == "hello"
+
+
+@pytest.mark.anyio
+async def test_call_groq_no_outbound_langsmith_call_when_tracing_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With tracing env vars cleared, the mocked Groq SDK boundary is the
+    only network interaction driven by the call — no LangSmith HTTP client
+    is constructed or invoked."""
+    for var in (
+        "LANGSMITH_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_TRACING_V2",
+        "LANGCHAIN_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    mock_client = _make_mock_client()
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    langsmith_client_calls: list[object] = []
+    from langsmith import client as langsmith_client_module
+
+    original_request = langsmith_client_module.Client.request_with_retries
+
+    def _tracking_request(self: object, *args: object, **kwargs: object) -> object:
+        langsmith_client_calls.append((args, kwargs))
+        return original_request(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        langsmith_client_module.Client, "request_with_retries", _tracking_request
+    )
+
+    await call_groq("test prompt", max_tokens=10)
+
+    assert langsmith_client_calls == []
+    mock_client.chat.completions.create.assert_awaited_once()
+
+
+def test_settings_has_no_langsmith_or_langchain_field() -> None:
+    """app.core.config.Settings has no field whose name contains a LangSmith
+    or LangChain marker (guards D-01 against a future regression)."""
+    from app.core.config import Settings
+
+    matches = [
+        f
+        for f in Settings.model_fields
+        if "langsmith" in f.lower() or "langchain" in f.lower()
+    ]
+    assert matches == []
+
+
+# ---------------------------------------------------------------------------
 # reset_groq_client — event-loop safety across Celery task boundaries
 # ---------------------------------------------------------------------------
 

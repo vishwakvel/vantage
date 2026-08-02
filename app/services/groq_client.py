@@ -6,7 +6,10 @@ Direct groq imports in app/agents/ or app/graph/ are prohibited and detected
 by the import guard test (plan 01-08).
 
 ``call_groq`` returns a ``GroqResult`` (text plus prompt/completion token
-counts) rather than a bare string.
+counts) rather than a bare string, and is decorated with LangSmith's
+``@traceable`` so every Groq call in the codebase emits an ``llm``-type
+trace when tracing is enabled (see ``call_groq``'s docstring for the
+data-exposure implication of turning tracing on).
 """
 
 import asyncio
@@ -14,6 +17,7 @@ import time
 from dataclasses import dataclass
 
 from groq import AsyncGroq
+from langsmith import traceable
 
 from app.core.config import get_settings
 
@@ -171,6 +175,7 @@ def _build_groq_result(text: str, usage: object | None) -> GroqResult:
     )
 
 
+@traceable(run_type="llm", name="groq_chat_completion")
 async def call_groq(
     prompt: str,
     model: str = "llama-3.3-70b-versatile",
@@ -185,6 +190,17 @@ async def call_groq(
     not caught here — they propagate to the caller; the SDK's own
     retry/backoff plus the rate limiter above already cover transient
     failures, so no hand-rolled retry loop is added.
+
+    This function is decorated with LangSmith's ``@traceable`` (run_type
+    "llm"), so every Groq call in the codebase emits a trace when tracing is
+    enabled. Tracing is optional and off by default: it activates only when
+    the LangSmith environment variables (``LANGSMITH_TRACING``,
+    ``LANGSMITH_API_KEY``) are set — the decorator itself checks these at
+    call time and executes this function normally, with no network call to
+    LangSmith, when they are unset. When tracing IS enabled, the full prompt
+    text and completion text of every agent call leave this application's
+    infrastructure and are sent to LangSmith's hosted backend — enable only
+    with that data-exposure implication in mind.
 
     Args:
         prompt:     The prompt text to send to Groq.
