@@ -5,12 +5,17 @@ Tests verify:
   - acquire() blocks (awaits) when tokens are exhausted — never raises, never drops
   - groq_rate_limiter module-level singleton exists with correct capacity
   - call_groq() performs a real (SDK-boundary-mocked) Groq chat-completion:
-    it acquires the rate limiter before calling the SDK, returns the
-    completion text, defaults to llama-3.3-70b-versatile, and invokes the
-    SDK with the expected messages/model/max_tokens.
+    it acquires the rate limiter before calling the SDK, returns a GroqResult
+    carrying the completion text and usage, defaults to
+    llama-3.3-70b-versatile, and invokes the SDK with the expected
+    messages/model/max_tokens.
+  - GroqResult defensively extracts prompt/completion token counts from the
+    response's usage field, defaulting to 0 when usage is None, and exposes
+    a LangSmith-shaped usage_metadata dict.
 """
 
 import asyncio
+import dataclasses
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,6 +24,7 @@ import pytest
 import app.services.groq_client as groq_client_module
 from app.services.groq_client import (
     AsyncTokenBucketRateLimiter,
+    GroqResult,
     call_groq,
     groq_rate_limiter,
 )
@@ -144,10 +150,29 @@ class _FakeSettings:
     GROQ_API_KEY = "test-groq-key-not-for-production"
 
 
-def _make_mock_client(content: str = "mocked completion text") -> MagicMock:
-    """Build a mock AsyncGroq client whose chat.completions.create returns *content*."""
+def _make_mock_usage(prompt_tokens: int = 7, completion_tokens: int = 3) -> MagicMock:
+    """Build a mock Groq CompletionUsage object."""
+    usage = MagicMock()
+    usage.prompt_tokens = prompt_tokens
+    usage.completion_tokens = completion_tokens
+    return usage
+
+
+def _make_mock_client(
+    content: str = "mocked completion text",
+    usage: MagicMock | None = "__default__",  # type: ignore[assignment]
+) -> MagicMock:
+    """Build a mock AsyncGroq client whose chat.completions.create returns *content*.
+
+    *usage* configures the mocked response's ``usage`` attribute: pass
+    ``None`` explicitly to simulate a response with no usage field, or omit
+    it to get a default populated usage mock.
+    """
+    if usage == "__default__":
+        usage = _make_mock_usage()
     mock_response = MagicMock()
     mock_response.choices = [MagicMock(message=MagicMock(content=content))]
+    mock_response.usage = usage
     mock_client = MagicMock()
     mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
     return mock_client
@@ -198,14 +223,70 @@ async def test_call_groq_acquires_rate_limit_before_sdk_call(
 
 @pytest.mark.anyio
 async def test_call_groq_returns_completion_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """call_groq returns response.choices[0].message.content."""
+    """call_groq returns a GroqResult whose text equals the completion content."""
     mock_client = _make_mock_client(content="hello from groq")
     monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
     monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
 
     result = await call_groq("test prompt", max_tokens=10)
 
-    assert result == "hello from groq"
+    assert isinstance(result, GroqResult)
+    assert result.text == "hello from groq"
+
+
+@pytest.mark.anyio
+async def test_call_groq_returns_prompt_and_completion_token_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GroqResult.prompt_tokens/.completion_tokens equal the mocked usage counts."""
+    mock_client = _make_mock_client(usage=_make_mock_usage(prompt_tokens=42, completion_tokens=17))
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    result = await call_groq("test prompt", max_tokens=10)
+
+    assert result.prompt_tokens == 42
+    assert result.completion_tokens == 17
+
+
+@pytest.mark.anyio
+async def test_call_groq_none_usage_yields_zero_token_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A response whose usage is None yields zero counts, no AttributeError."""
+    mock_client = _make_mock_client(usage=None)
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    result = await call_groq("test prompt", max_tokens=10)
+
+    assert result.prompt_tokens == 0
+    assert result.completion_tokens == 0
+
+
+@pytest.mark.anyio
+async def test_call_groq_usage_metadata_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GroqResult.usage_metadata carries LangSmith-recognized keys."""
+    mock_client = _make_mock_client(usage=_make_mock_usage(prompt_tokens=5, completion_tokens=2))
+    monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
+
+    result = await call_groq("test prompt", max_tokens=10)
+
+    assert result.usage_metadata == {
+        "input_tokens": 5,
+        "output_tokens": 2,
+        "total_tokens": 7,
+    }
+
+
+def test_groq_result_is_frozen() -> None:
+    """GroqResult is a frozen dataclass — assigning to a field raises."""
+    result = GroqResult(
+        text="x", prompt_tokens=0, completion_tokens=0, usage_metadata={}
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        result.text = "y"  # type: ignore[misc]
 
 
 @pytest.mark.anyio
