@@ -39,6 +39,13 @@ Coverage (MEMO-02, MEMO-03, EXEC-02):
     shape (_fallback_output consistency).
   - test_detect_anomalies_invoked_via_asyncio_to_thread: detect_anomalies
     is awaited through asyncio.to_thread, never called inline.
+  - test_success_persists_token_counts: on the success path, the persisted
+    AgentOutput carries prompt_tokens/completion_tokens equal to the mocked
+    GroqResult's values (D-06).
+  - test_zero_chunks_persists_null_token_counts: the zero-chunks early-return
+    path (never calls Groq) persists NULL prompt_tokens/completion_tokens.
+  - test_llm_error_persists_null_token_counts: a raising call_groq persists
+    NULL prompt_tokens/completion_tokens on the fallback AgentOutput.
 
 Mocks only at the SERVICE boundary — ``app.agents.fundamental_analysis.call_groq``
 and ``app.agents.fundamental_analysis.hybrid_retrieve`` — never the groq SDK or
@@ -46,6 +53,8 @@ ChromaDB directly (mirrors ``tests/services/test_ticker_resolver.py``'s
 boundary-mock convention). An autouse fixture additionally patches
 ``persist_quarterly_metrics`` for every test in this module (see below) so the
 node's new metrics call can never reach a real external API from a unit test.
+``call_groq`` is mocked to return a ``GroqResult`` (post-12-05 contract), built
+via the ``_make_groq_result`` helper below rather than a bare string.
 """
 
 import uuid
@@ -71,10 +80,29 @@ from app.ingestion.section_constants import (
     SECTION_RISK_FACTORS,
 )
 from app.services.anomaly_detection import AnomalyReport
+from app.services.groq_client import GroqResult
 
 pytestmark = pytest.mark.anyio
 
 _ALL_TARGET_SECTIONS = (SECTION_MDA, SECTION_FINANCIALS, SECTION_NOTES, SECTION_RISK_FACTORS)
+
+
+def _make_groq_result(
+    text: str = "A narrative about AAPL's fundamentals.",
+    prompt_tokens: int = 100,
+    completion_tokens: int = 50,
+) -> GroqResult:
+    """Build a ``GroqResult`` for mocking ``call_groq`` (post-12-05 contract)."""
+    return GroqResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        usage_metadata={
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -183,7 +211,7 @@ async def test_citations_have_canonical_id(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="A narrative about AAPL's fundamentals."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         result = await fundamental_analysis_node(state)
@@ -215,7 +243,7 @@ async def test_citations_have_quote(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="A narrative about AAPL's fundamentals."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         result = await fundamental_analysis_node(state)
@@ -247,7 +275,7 @@ async def test_status_success_all_sections(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="A narrative about AAPL's fundamentals."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         result = await fundamental_analysis_node(state)
@@ -268,6 +296,8 @@ async def test_status_success_all_sections(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
+    assert output_row.prompt_tokens == 100
+    assert output_row.completion_tokens == 50
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +319,7 @@ async def test_status_partial_missing_section(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="A narrative about AAPL's fundamentals."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         result = await fundamental_analysis_node(state)
@@ -327,7 +357,7 @@ async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
         patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=[]),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="unused"),
+            AsyncMock(return_value=_make_groq_result(text="unused")),
         ) as mock_call_groq,
     ):
         result = await fundamental_analysis_node(state)
@@ -351,6 +381,8 @@ async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
     # D-07: a human-readable reason sentence, never the raw section-name list
     # (that list is reserved for the PARTIAL missing-some-sections case).
     assert output_row.missing_fields == _REASONS["zero_chunks"]
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +428,8 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     # regardless of cause.
     assert output_row.missing_fields == _REASONS["llm_error"]
     assert output_row.missing_fields != _REASONS["zero_chunks"]
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +452,7 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="A narrative about AAPL's fundamentals."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         await fundamental_analysis_node(state)
@@ -484,7 +518,7 @@ async def test_anomalies_flow_through_to_output(db_session: AsyncSession) -> Non
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="A narrative about AAPL's fundamentals."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
         patch(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
@@ -539,7 +573,7 @@ async def test_skipped_metrics_sets_insufficient_history_note(
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="narrative"),
+            AsyncMock(return_value=_make_groq_result(text="narrative")),
         ),
         patch(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
@@ -585,7 +619,7 @@ async def test_skipped_metrics_coexist_with_anomalies(
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="narrative"),
+            AsyncMock(return_value=_make_groq_result(text="narrative")),
         ),
         patch(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
@@ -629,7 +663,7 @@ async def test_metrics_persistence_failure_leaves_status_and_completeness_unchan
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="narrative"),
+            AsyncMock(return_value=_make_groq_result(text="narrative")),
         ),
         patch(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
@@ -682,7 +716,7 @@ async def test_anomaly_detection_failure_leaves_status_and_completeness_unchange
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="narrative"),
+            AsyncMock(return_value=_make_groq_result(text="narrative")),
         ),
         patch(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
@@ -740,7 +774,7 @@ async def test_empty_metrics_series_sets_metrics_unavailable_note(
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="narrative"),
+            AsyncMock(return_value=_make_groq_result(text="narrative")),
         ),
         patch(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
@@ -815,7 +849,7 @@ async def test_detect_anomalies_invoked_via_asyncio_to_thread(
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            AsyncMock(return_value="narrative"),
+            AsyncMock(return_value=_make_groq_result(text="narrative")),
         ),
         patch(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",

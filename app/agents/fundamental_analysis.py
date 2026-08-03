@@ -241,9 +241,10 @@ async def fundamental_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
             await session.commit()
             return {"fundamentals_output": None, "fundamentals_status": "FAILED"}
 
-        narrative = await call_groq(
+        groq_result = await call_groq(
             _build_prompt(ticker, chunks), max_tokens=_MAX_TOKENS
         )
+        narrative = groq_result.text
         citations = [_build_citation(chunk) for chunk in chunks]
         anomalies, metrics_note = await _collect_anomalies(ticker, session)
         output = {
@@ -272,6 +273,8 @@ async def fundamental_analysis_node(state: dict[str, Any]) -> dict[str, Any]:
                 completeness=completeness,
                 missing_fields=missing_fields,
                 output=output,
+                prompt_tokens=groq_result.prompt_tokens,
+                completion_tokens=groq_result.completion_tokens,
             )
         )
         await session.commit()

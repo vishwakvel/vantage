@@ -35,6 +35,14 @@ Coverage rule (D-03, this plan's locked decision):
   - Both present -> SUCCESS + AgentOutputCompleteness.FULL.
   - call_groq (or any other) exception -> FAILED, llm-error D-07 sentence,
     never propagates.
+
+Token persistence (D-06, 12-09-PLAN.md): the single post-call_groq
+``AgentOutput`` write (SUCCESS or the news-missing PARTIAL — both share one
+completed Groq call) additionally records ``prompt_tokens``/
+``completion_tokens`` taken from that call's ``GroqResult``. The zero-chunks
+early return and the outer exception-handler fallback both write their own
+``AgentOutput`` BEFORE or WITHOUT a completed Groq call, so both leave
+``prompt_tokens``/``completion_tokens`` NULL rather than fabricate a cost.
 """
 
 from __future__ import annotations
@@ -50,7 +58,7 @@ from app.db.models import (
 )
 from app.db.session import session_scope
 from app.ingestion.retriever import hybrid_retrieve
-from app.ingestion.section_constants import SECTION_RISK_FACTORS, SECTION_RISKS
+from app.ingestion.section_constants import SECTION_RISKS
 from app.services.groq_client import call_groq
 from app.services.news_client import news_client
 
@@ -208,9 +216,10 @@ async def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
 
             articles = await news_client.get_recent_articles(ticker)
 
-            narrative = await call_groq(
+            groq_result = await call_groq(
                 _build_prompt(ticker, chunks, articles), max_tokens=_MAX_TOKENS
             )
+            narrative = groq_result.text
             citations = [_build_citation(chunk) for chunk in chunks]
             output = {
                 "narrative": narrative,
@@ -234,6 +243,8 @@ async def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
                     completeness=completeness,
                     missing_fields=missing_fields,
                     output=output,
+                    prompt_tokens=groq_result.prompt_tokens,
+                    completion_tokens=groq_result.completion_tokens,
                 )
             )
             await session.commit()

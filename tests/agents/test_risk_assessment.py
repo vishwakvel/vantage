@@ -14,13 +14,21 @@ Coverage (AGENT-02, EXEC-04, D-07):
     exception propagates.
   - test_one_agenttask_and_one_agentoutput_persisted: exactly one AgentTask
     (agent_type "RiskAssessment") + one AgentOutput exist per run.
+  - test_success_persists_token_counts: on the success path, the persisted
+    AgentOutput carries prompt_tokens/completion_tokens equal to the mocked
+    GroqResult's values (D-06).
+  - test_status_failed_zero_chunks and test_node_never_raises_on_llm_error
+    persist NULL prompt_tokens/completion_tokens on their fallback
+    AgentOutput rows.
 
 Mocks only at the module boundary — ``app.agents.risk_assessment.call_groq``,
 ``app.agents.risk_assessment.hybrid_retrieve``,
 ``app.agents.risk_assessment.news_client.get_recent_articles``, and
 ``app.agents.risk_assessment.session_scope`` — never the groq SDK, httpx, or
 ChromaDB directly (mirrors ``tests/agents/test_fundamental_analysis.py``'s
-boundary-mock convention).
+boundary-mock convention). ``call_groq`` is mocked to return a ``GroqResult``
+(post-12-05 contract), built via the ``_make_groq_result`` helper below rather
+than a bare string.
 """
 
 import uuid
@@ -41,8 +49,27 @@ from app.db.models import (
     User,
 )
 from app.ingestion.section_constants import SECTION_RISK_FACTORS, SECTION_RISKS
+from app.services.groq_client import GroqResult
 
 pytestmark = pytest.mark.anyio
+
+
+def _make_groq_result(
+    text: str = "A structured risk narrative about AAPL.",
+    prompt_tokens: int = 100,
+    completion_tokens: int = 50,
+) -> GroqResult:
+    """Build a ``GroqResult`` for mocking ``call_groq`` (post-12-05 contract)."""
+    return GroqResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        usage_metadata={
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +186,7 @@ async def test_status_success_chunks_and_news(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.risk_assessment.call_groq",
-            AsyncMock(return_value="A structured risk narrative about AAPL."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         result = await risk_assessment_node(state)
@@ -190,6 +217,8 @@ async def test_status_success_chunks_and_news(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
+    assert output_row.prompt_tokens == 100
+    assert output_row.completion_tokens == 50
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +247,7 @@ async def test_status_partial_news_missing(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.risk_assessment.call_groq",
-            AsyncMock(return_value="A structured risk narrative about AAPL."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         result = await risk_assessment_node(state)
@@ -268,7 +297,7 @@ async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
         ) as mock_news,
         patch(
             "app.agents.risk_assessment.call_groq",
-            AsyncMock(return_value="unused"),
+            AsyncMock(return_value=_make_groq_result(text="unused")),
         ) as mock_call_groq,
     ):
         result = await risk_assessment_node(state)
@@ -293,6 +322,8 @@ async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
     assert output_row.missing_fields == [
         "Risk assessment unavailable — no risk-factors disclosure found for AAPL"
     ]
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +375,8 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     assert output_row.missing_fields == [
         "Risk assessment unavailable — analysis engine error"
     ]
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +405,7 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         ),
         patch(
             "app.agents.risk_assessment.call_groq",
-            AsyncMock(return_value="A structured risk narrative about AAPL."),
+            AsyncMock(return_value=_make_groq_result()),
         ),
     ):
         await risk_assessment_node(state)
