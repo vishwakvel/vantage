@@ -84,7 +84,9 @@ _REASONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def _build_citation(label: str, series_id: str, observations: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_citation(
+    label: str, series_id: str, observations: list[dict[str, Any]]
+) -> dict[str, Any]:
     """Build a citation object for one successfully-fetched FRED series.
 
     Unlike filing-chunk citations, a FRED citation references the series id
@@ -194,9 +196,10 @@ async def macro_sector_node(state: dict[str, Any]) -> dict[str, Any]:
                 await session.commit()
                 return {"macro_output": None, "macro_status": "FAILED"}
 
-            narrative = await call_groq(
+            groq_result = await call_groq(
                 _build_prompt(ticker, series_data), max_tokens=_MAX_TOKENS
             )
+            narrative = groq_result.text
             citations = [
                 _build_citation(label, MACRO_SERIES[label], observations)
                 for label, observations in series_data.items()
@@ -226,6 +229,8 @@ async def macro_sector_node(state: dict[str, Any]) -> dict[str, Any]:
                     completeness=completeness,
                     missing_fields=missing_fields,
                     output=output,
+                    prompt_tokens=groq_result.prompt_tokens,
+                    completion_tokens=groq_result.completion_tokens,
                 )
             )
             await session.commit()
