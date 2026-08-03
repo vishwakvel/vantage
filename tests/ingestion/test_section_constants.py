@@ -54,6 +54,7 @@ def test_edgar_section_constants_have_correct_values() -> None:
 def test_memo_section_constants_have_correct_values() -> None:
     """Research memo output section identifiers carry correct string values."""
     assert section_constants.SECTION_CONTRADICTIONS == "contradictions"
+    assert section_constants.SECTION_COST == "cost"
     assert section_constants.SECTION_RISKS == "risks"
     assert section_constants.SECTION_MACRO == "macro"
     assert section_constants.SECTION_COMPARABLES == "comparables"

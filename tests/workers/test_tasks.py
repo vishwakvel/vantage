@@ -38,6 +38,7 @@ from app.db.models import (
     ResearchRequest,
     User,
 )
+from app.services.api_call_counter import get_current_plan_id
 from app.workers.tasks import _run_research_async
 
 pytestmark = pytest.mark.anyio
@@ -381,3 +382,88 @@ async def test_run_research_async_marks_memo_failed_on_unexpected_exception(
     await db_session.refresh(memo)
     assert memo.status == ResearchMemoStatus.FAILED
     mock_publish_terminal.assert_awaited_once_with(str(memo.id), "FAILED")
+
+
+async def test_run_research_async_sets_ambient_plan_id_for_graph_invocation(
+    db_session: AsyncSession,
+):
+    """D-05/OBS-02: the run's plan id is visible as the ambient plan id to
+    code running inside the graph invocation — this is what makes the five
+    in-graph service clients' api_call_counter increments actually land
+    (plan 12-13, Task 1)."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    captured_plan_id: str | None = None
+
+    async def _capture_and_return(*_args, **_kwargs):
+        nonlocal captured_plan_id
+        captured_plan_id = get_current_plan_id()
+        return _FINAL_STATE
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(side_effect=_capture_and_return)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    assert captured_plan_id == str(plan.id)
+
+
+async def test_run_research_async_ambient_plan_id_is_plan_id_not_memo_id(
+    db_session: AsyncSession,
+):
+    """The ambient plan id observed inside the graph invocation is the run's
+    ``plan_id`` argument, never the ``memo_id`` (plan 12-13, Task 1)."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    assert str(memo.id) != str(plan.id)
+
+    captured_plan_id: str | None = None
+
+    async def _capture_and_return(*_args, **_kwargs):
+        nonlocal captured_plan_id
+        captured_plan_id = get_current_plan_id()
+        return _FINAL_STATE
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(side_effect=_capture_and_return)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    assert captured_plan_id == str(plan.id)
+    assert captured_plan_id != str(memo.id)
