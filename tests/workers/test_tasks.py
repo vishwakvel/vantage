@@ -8,6 +8,18 @@ Coverage:
   with a full six-section body (EXEC-04 reason present for the failed
   section), publish_memo_terminal awaited once with the final status, and
   no second ResearchMemo row is created for the plan.
+- test_run_research_async_sets_ambient_plan_id_for_graph_invocation /
+  test_run_research_async_ambient_plan_id_is_plan_id_not_memo_id (12-13
+  Task 1): the run's plan id is visible as the ambient plan id inside the
+  graph invocation, and is the plan_id argument, never the memo_id.
+- MEMO-06/OBS-02 cost aggregation (12-13 Task 2): body["cost"]["tokens"]
+  sums this run's own AgentOutput prompt/completion token columns (latest
+  AgentTask per agent_type only, so a rerun's older rows never double-
+  count); body["cost"]["api_calls"] equals the patched counter read,
+  awaited exactly once with the run's plan id; NULL token columns
+  contribute zero without raising; the cost key is present with a zero
+  token total even when every section failed; and the cost value carries
+  exactly the two keys ``tokens``/``api_calls``, never a monetary figure.
 
 Uses the ``db_session``/``test_settings`` fixtures from ``tests/conftest.py``
 (real test-postgres on port 5433, skips automatically when unreachable, per
@@ -16,6 +28,9 @@ the ``app.workers.tasks`` import site (never touching a real broker/Redis/
 Groq call); ``session_scope`` is patched to yield the real ``db_session`` so
 persistence assertions run against a real DB row, mirroring
 ``tests/api/test_research_api.py``'s db_session-backed pattern.
+``read_and_clear_api_call_count`` is patched with an ``AsyncMock`` in every
+test that runs ``_run_research_async`` (including tests predating the cost
+aggregation) so no test depends on a real Redis connection.
 """
 
 import contextlib
@@ -120,6 +135,38 @@ async def _seed_failed_sentiment_output(
     await db_session.flush()
 
 
+async def _seed_agent_output_with_tokens(
+    db_session: AsyncSession,
+    plan: ResearchPlan,
+    agent_type: str,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+) -> None:
+    """Seed an AgentTask/AgentOutput pair carrying the given token counts
+    for ``agent_type`` (12-13 Task 2 cost-aggregation coverage). Either
+    token argument may be ``None`` to model a degraded agent row whose
+    Groq call never completed."""
+    task = AgentTask(
+        plan_id=plan.id,
+        agent_type=agent_type,
+        status=AgentTaskStatus.SUCCESS,
+        input={},
+    )
+    db_session.add(task)
+    await db_session.flush()
+
+    output = AgentOutput(
+        task_id=task.id,
+        completeness=AgentOutputCompleteness.FULL,
+        missing_fields=None,
+        output={},
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+    db_session.add(output)
+    await db_session.flush()
+
+
 _FINAL_STATE = {
     "fundamentals_output": {"narrative": "Strong revenue growth."},
     "fundamentals_status": "SUCCESS",
@@ -165,6 +212,10 @@ async def test_run_research_async_updates_existing_memo_with_full_body(
     with (
         patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
         patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
+        patch(
             "app.workers.tasks.publish_memo_terminal", new=AsyncMock()
         ) as mock_publish_terminal,
         patch("app.workers.tasks.session_scope", _fake_session_scope),
@@ -187,7 +238,11 @@ async def test_run_research_async_updates_existing_memo_with_full_body(
         "macro",
         "comparables",
         "synthesis",
+        "cost",
     }
+    # MEMO-06/OBS-02: the cost key is always present (Phase 7 body-assembly
+    # guarantee), zero tokens here since no AgentOutput rows were seeded.
+    assert memo.body["cost"] == {"tokens": 0, "api_calls": 0}
     # SUCCESS sections store the output as-is, except METRIC-02's
     # anomalies backfill unconditionally guarantees the key is present.
     assert memo.body["fundamentals"] == {
@@ -247,6 +302,10 @@ async def test_run_research_async_carries_contradictions_through(
 
     with (
         patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
         patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
         patch("app.workers.tasks.session_scope", _fake_session_scope),
     ):
@@ -289,6 +348,10 @@ async def test_run_research_async_synthesis_failed_still_has_empty_contradiction
 
     with (
         patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
         patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
         patch("app.workers.tasks.session_scope", _fake_session_scope),
     ):
@@ -331,6 +394,10 @@ async def test_run_research_async_fundamentals_failed_still_has_empty_anomalies(
 
     with (
         patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
         patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
         patch("app.workers.tasks.session_scope", _fake_session_scope),
     ):
@@ -367,6 +434,10 @@ async def test_run_research_async_marks_memo_failed_on_unexpected_exception(
 
     with (
         patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
         patch(
             "app.workers.tasks.publish_memo_terminal", new=AsyncMock()
         ) as mock_publish_terminal,
@@ -413,6 +484,10 @@ async def test_run_research_async_sets_ambient_plan_id_for_graph_invocation(
 
     with (
         patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
         patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
         patch("app.workers.tasks.session_scope", _fake_session_scope),
     ):
@@ -455,6 +530,10 @@ async def test_run_research_async_ambient_plan_id_is_plan_id_not_memo_id(
 
     with (
         patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
         patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
         patch("app.workers.tasks.session_scope", _fake_session_scope),
     ):
@@ -467,3 +546,325 @@ async def test_run_research_async_ambient_plan_id_is_plan_id_not_memo_id(
 
     assert captured_plan_id == str(plan.id)
     assert captured_plan_id != str(memo.id)
+
+
+# ---------------------------------------------------------------------------
+# MEMO-06/OBS-02 — cost aggregation (12-13 Task 2)
+# ---------------------------------------------------------------------------
+
+
+async def test_run_research_async_sums_tokens_across_agents(
+    db_session: AsyncSession,
+):
+    """body["cost"]["tokens"] equals the sum of every prompt and completion
+    count across this run's AgentOutput rows."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await _seed_agent_output_with_tokens(
+        db_session, plan, "FundamentalAnalysis", 10, 20
+    )
+    await _seed_agent_output_with_tokens(db_session, plan, "SentimentNLP", 5, 15)
+    await _seed_agent_output_with_tokens(db_session, plan, "RiskAssessment", 7, 3)
+    await db_session.commit()
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=_FINAL_STATE)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.body["cost"]["tokens"] == (10 + 20) + (5 + 15) + (7 + 3)
+
+
+async def test_run_research_async_api_calls_equals_patched_counter_read(
+    db_session: AsyncSession,
+):
+    """body["cost"]["api_calls"] equals the value returned by the patched
+    counter read, and the read is awaited exactly once with the run's
+    plan id."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=_FINAL_STATE)
+
+    mock_read_and_clear = AsyncMock(return_value=42)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=mock_read_and_clear,
+        ),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.body["cost"]["api_calls"] == 42
+    mock_read_and_clear.assert_awaited_once_with(str(plan.id))
+
+
+async def test_run_research_async_null_token_columns_contribute_zero(
+    db_session: AsyncSession,
+):
+    """An AgentOutput row whose token columns are NULL contributes zero to
+    the total and does not raise."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await _seed_agent_output_with_tokens(
+        db_session, plan, "FundamentalAnalysis", 10, 20
+    )
+    await _seed_agent_output_with_tokens(db_session, plan, "SentimentNLP", None, None)
+    await db_session.commit()
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=_FINAL_STATE)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.body["cost"]["tokens"] == 30
+
+
+async def test_run_research_async_rerun_excludes_older_agent_output(
+    db_session: AsyncSession,
+):
+    """Two AgentTask rows for the same agent_type (a rerun) contribute only
+    the newer row's tokens — the older run's tokens are not double-counted
+    (D-03 rerun lineage)."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    # Older run's row for the same agent_type.
+    await _seed_agent_output_with_tokens(
+        db_session, plan, "FundamentalAnalysis", 1000, 2000
+    )
+    await db_session.commit()
+    # This run's (newer) row for the same agent_type.
+    await _seed_agent_output_with_tokens(
+        db_session, plan, "FundamentalAnalysis", 10, 20
+    )
+    await db_session.commit()
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=_FINAL_STATE)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    # Only the newer row's 10 + 20 = 30 counts, not the older 1000 + 2000.
+    assert memo.body["cost"]["tokens"] == 30
+
+
+async def test_run_research_async_all_failed_run_still_persists_zero_cost(
+    db_session: AsyncSession,
+):
+    """A run in which every section failed still persists a cost key, with
+    a zero token total rather than a missing key."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    final_state = {
+        "fundamentals_output": None,
+        "fundamentals_status": "FAILED",
+        "sentiment_output": None,
+        "sentiment_status": "FAILED",
+        "risk_output": None,
+        "risk_status": "FAILED",
+        "macro_output": None,
+        "macro_status": "FAILED",
+        "comparables_output": None,
+        "comparables_status": "FAILED",
+        "synthesis_output": None,
+        "synthesis_status": "FAILED",
+        "memo_status": "FAILED",
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=final_state)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.status == ResearchMemoStatus.FAILED
+    assert memo.body["cost"] == {"tokens": 0, "api_calls": 0}
+
+
+async def test_run_research_async_cost_has_exactly_two_keys(
+    db_session: AsyncSession,
+):
+    """memo.body["cost"] has exactly the two keys tokens and api_calls —
+    the shape never carries a monetary field (D-04)."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await db_session.commit()
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=_FINAL_STATE)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert set(memo.body["cost"].keys()) == {"tokens", "api_calls"}
+
+
+async def test_run_research_async_zero_counter_read_still_yields_well_formed_cost(
+    db_session: AsyncSession,
+):
+    """A counter read that returns 0 because Redis was unreachable still
+    yields a well-formed cost value rather than a missing key."""
+    owner = await _seed_user(db_session)
+    await _seed_company(db_session)
+    plan = await _seed_plan(db_session, owner)
+    memo = await _seed_pending_memo(db_session, plan, owner)
+    await _seed_agent_output_with_tokens(
+        db_session, plan, "FundamentalAnalysis", 10, 20
+    )
+    await db_session.commit()
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=_FINAL_STATE)
+
+    @contextlib.asynccontextmanager
+    async def _fake_session_scope():
+        yield db_session
+
+    with (
+        patch("app.workers.tasks.build_research_graph", return_value=mock_graph),
+        patch(
+            "app.workers.tasks.read_and_clear_api_call_count",
+            new=AsyncMock(return_value=0),
+        ),
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()),
+        patch("app.workers.tasks.session_scope", _fake_session_scope),
+    ):
+        await _run_research_async(
+            memo_id=str(memo.id),
+            plan_id=str(plan.id),
+            ticker="AAPL",
+            user_id=str(owner.id),
+        )
+
+    await db_session.refresh(memo)
+
+    assert memo.body["cost"] == {"tokens": 30, "api_calls": 0}
