@@ -7,12 +7,18 @@ LangGraph node, no agent loop, no second call — this is a pure
 request/response function invoked once per ``POST
 /research/memo/{memo_id}/chat`` request (08-02-PLAN.md, mirrors
 ``app/agents/synthesis.py``'s call -> split -> parse pipeline, collapsed
-to a single turn with no AgentTask/AgentOutput rows — the route (08-03)
+to a single turn with no per-agent task/output rows — the route (08-03)
 persists ChatMessage rows instead).
 
 This module NEVER imports ``groq``/``AsyncGroq`` directly (D-12) — only
 ``call_groq`` from ``app.services.groq_client``, the sole rate-limited path
 to the Groq API.
+
+This call is traced automatically by LangSmith because ``call_groq`` is the
+decorated shared chokepoint (OBS-01), and its tokens are deliberately
+excluded from any memo's generation-cost total (OBS-02/MEMO-06) — a
+follow-up chat turn happens after the memo has already been generated and
+this module never persists a per-agent output row to attribute a cost to.
 """
 
 from __future__ import annotations
@@ -241,7 +247,8 @@ async def answer_chat_turn(
     ``await`` (never ``asyncio.run`` — FastAPI already runs a loop).
     """
     prompt = _build_chat_prompt(memo_body, history, question)
-    raw = await call_groq(prompt, max_tokens=_MAX_TOKENS)
+    groq_result = await call_groq(prompt, max_tokens=_MAX_TOKENS)
+    raw = groq_result.text
     narrative, fenced = _split_narrative_and_json(raw)
     coverage_exceeded = _parse_coverage_flag(fenced)
     return narrative, coverage_exceeded

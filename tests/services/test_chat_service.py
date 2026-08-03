@@ -38,6 +38,18 @@ from app.services.chat_service import (
     _split_narrative_and_json,
     answer_chat_turn,
 )
+from app.services.groq_client import GroqResult
+
+
+#: Minimal GroqResult factory for mocking call_groq's new return contract —
+#: only ``text`` matters to chat_service (it never persists token counts).
+def _groq_result(text: str) -> GroqResult:
+    return GroqResult(
+        text=text,
+        prompt_tokens=20,
+        completion_tokens=15,
+        usage_metadata={"input_tokens": 20, "output_tokens": 15, "total_tokens": 35},
+    )
 
 #: Runs the async tests in this module under anyio (asyncio backend, per
 #: conftest.py's anyio_backend fixture) — mirrors
@@ -212,7 +224,9 @@ async def test_answer_chat_turn_returns_narrative_and_false_flag() -> None:
     with patch(
         "app.services.chat_service.call_groq",
         AsyncMock(
-            return_value='Grounded answer.\n```json\n{"coverage_exceeded": false}\n```'
+            return_value=_groq_result(
+                'Grounded answer.\n```json\n{"coverage_exceeded": false}\n```'
+            )
         ),
     ) as mock_call:
         narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
@@ -228,7 +242,9 @@ async def test_answer_chat_turn_returns_true_flag() -> None:
     with patch(
         "app.services.chat_service.call_groq",
         AsyncMock(
-            return_value='Answer here.\n```json\n{"coverage_exceeded": true}\n```'
+            return_value=_groq_result(
+                'Answer here.\n```json\n{"coverage_exceeded": true}\n```'
+            )
         ),
     ):
         narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
@@ -239,7 +255,9 @@ async def test_answer_chat_turn_returns_true_flag() -> None:
 
 async def test_answer_chat_turn_calls_call_groq_exactly_once_with_max_tokens() -> None:
     body = _full_memo_body()
-    mock_call = AsyncMock(return_value='Answer.\n```json\n{"coverage_exceeded": false}\n```')
+    mock_call = AsyncMock(
+        return_value=_groq_result('Answer.\n```json\n{"coverage_exceeded": false}\n```')
+    )
     with patch("app.services.chat_service.call_groq", mock_call):
         await answer_chat_turn(body, [], "A question?")
 
@@ -251,7 +269,9 @@ async def test_answer_chat_turn_calls_call_groq_exactly_once_with_max_tokens() -
 async def test_answer_chat_turn_prompt_contains_all_required_parts() -> None:
     body = _full_memo_body()
     history = [_FakeMessage("user", "Earlier question text")]
-    mock_call = AsyncMock(return_value='Answer.\n```json\n{"coverage_exceeded": false}\n```')
+    mock_call = AsyncMock(
+        return_value=_groq_result('Answer.\n```json\n{"coverage_exceeded": false}\n```')
+    )
     with patch("app.services.chat_service.call_groq", mock_call):
         await answer_chat_turn(body, history, "New question text")
 
@@ -267,7 +287,9 @@ async def test_answer_chat_turn_no_fence_returns_narrative_and_false() -> None:
     body = _full_memo_body()
     with patch(
         "app.services.chat_service.call_groq",
-        AsyncMock(return_value="A narrative answer with no fence at all."),
+        AsyncMock(
+            return_value=_groq_result("A narrative answer with no fence at all.")
+        ),
     ):
         narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
 
