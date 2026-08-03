@@ -18,6 +18,12 @@ inside the evaluator. ``celery_app.conf.timezone`` is pinned to ``"UTC"``
 because the evaluator computes every persisted state timestamp with
 ``datetime.now(timezone.utc)``, so beat and the persisted state must share
 one clock regardless of host locale.
+
+A second entry, ``evaluate-retrieval-quality`` (OBS-03), runs
+``app.workers.eval_tasks``'s offline RAGAS golden-set evaluation on a daily
+cadence — a scheduled batch job with no latency requirement that makes zero
+Groq calls, so it cannot compete with interactive research runs for the
+shared rate-limited budget (D-09).
 """
 
 from celery import Celery
@@ -30,7 +36,7 @@ celery_app = Celery(
     "vantage",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.workers.tasks", "app.workers.alert_tasks"],
+    include=["app.workers.tasks", "app.workers.alert_tasks", "app.workers.eval_tasks"],
 )
 
 # Makes the STARTED state observable (task has been picked up by a worker,
@@ -44,6 +50,14 @@ celery_app.conf.task_track_started = True
 #: from one place and assertable from a test.
 ALERT_EVALUATION_INTERVAL_SECONDS: float = 900.0
 
+#: OBS-03's suggested default cadence: daily (86400 seconds). This is a
+#: scheduled batch job with no latency requirement that makes zero Groq
+#: calls, so its cost is bounded retrieval work — daily is a reasonable
+#: default; tune later per the Phase 11 "suggest an interval, tune later"
+#: precedent. A named constant (rather than an inlined 86400.0) keeps the
+#: interval tunable from one place and assertable from a test.
+RAGAS_EVAL_INTERVAL_SECONDS: float = 86400.0
+
 # Deliberately ONE beat entry covering all three alert rule types (D-04),
 # not three per-type entries — per-type due-ness already lives inside
 # app.services.alert_evaluation_service.evaluate_all_rules.
@@ -51,6 +65,10 @@ celery_app.conf.beat_schedule = {
     "evaluate-alert-rules": {
         "task": "evaluate_alert_rules",
         "schedule": ALERT_EVALUATION_INTERVAL_SECONDS,
+    },
+    "evaluate-retrieval-quality": {
+        "task": "evaluate_retrieval_quality",
+        "schedule": RAGAS_EVAL_INTERVAL_SECONDS,
     },
 }
 
