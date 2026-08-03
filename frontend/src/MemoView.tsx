@@ -31,6 +31,19 @@ interface SynthesisSection {
   reason?: string | null;
 }
 
+/**
+ * Shape of the memo's aggregated generation cost (MEMO-06, D-04). Mirrors
+ * `app/workers/tasks.py`'s `body[SECTION_COST]` assembly — a token count
+ * summed across the plan's `AgentOutput` rows plus an external API call
+ * count read from the plan-scoped Redis counter. No monetary figure by
+ * design (D-04): Groq runs here on the free tier, so any derived cost
+ * figure would be fiction.
+ */
+interface MemoCost {
+  tokens: number;
+  api_calls: number;
+}
+
 interface MemoBody {
   fundamentals?: SpecialistSection;
   sentiment?: SpecialistSection;
@@ -38,6 +51,7 @@ interface MemoBody {
   macro?: SpecialistSection;
   comparables?: SpecialistSection;
   synthesis?: SynthesisSection;
+  cost?: MemoCost;
 }
 
 type SpecialistSectionKey =
@@ -68,8 +82,8 @@ function sourcesLine(citations: unknown[] | undefined): string | null {
 /**
  * Formatted memo view (MEMO-04/MEMO-05, D-05/D-06) — replaces the raw
  * `<pre>{memoJson}</pre>` dump. Renders a header with an at-a-glance status
- * badge, an "Overall Take" card, the Contradictions panel, then one card
- * per specialist section in AGENT_ORDER order.
+ * badge and cost line, a synthesis take card, the Contradictions panel, then
+ * one card per specialist section in AGENT_ORDER order.
  */
 export default function MemoView({
   memo,
@@ -85,6 +99,12 @@ export default function MemoView({
   // this key is always present (app/workers/tasks.py `setdefault`).
   const contradictions = synthesis?.contradictions ?? [];
   const hasTake = typeof synthesis?.take === "string";
+  // Defensive optional read, same T-07-UNDEF register as `contradictions`
+  // above: `tasks.py` assigns `body[SECTION_COST]` unconditionally on every
+  // body assembled from this phase forward (D-06), but memos persisted
+  // before this phase carry no such key, so this read is load-bearing
+  // rather than merely defensive.
+  const cost = body?.cost ?? null;
 
   return (
     <div className="memo-view">
@@ -93,6 +113,11 @@ export default function MemoView({
         <span className="badge" style={{ backgroundColor: badge.color }}>
           {badge.text}
         </span>
+        {cost && (
+          <span className="label">
+            {cost.tokens} tokens · {cost.api_calls} external API calls
+          </span>
+        )}
       </div>
 
       <div className="panel section-card">
