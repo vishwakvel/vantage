@@ -24,6 +24,11 @@ research request to zero or more candidate tickers, deriving confidence per
     or any other exception degrades to a low-confidence ``ResolutionResult``
     carrying the ranked fuzzy candidates, never raising. A parseable
     extraction uses the LLM's own self-reported confidence with method "llm".
+    This call is traced automatically by LangSmith because ``call_groq`` is
+    the decorated shared chokepoint (OBS-01), and its tokens are deliberately
+    excluded from any memo's generation-cost total (OBS-02/MEMO-06) — ticker
+    resolution runs before the ``ResearchPlan`` and memo even exist, and no
+    per-agent output row is ever persisted here to attribute a cost to.
   - Multi-term extraction (plan 03-03, D-06/D-07): the free-text path splits
     ``raw_query`` on comparison connectors ("and", ",", "vs", "versus",
     "compare") into up to 2 candidate spans, each resolved independently
@@ -351,7 +356,7 @@ async def _resolve_term(
     # --- LLM fallback (D-01/D-03): fuzzy path is inconclusive ---
     fallback_confidence = scored[0].score if scored else 0.0
     try:
-        raw_extraction = await call_groq(
+        groq_result = await call_groq(
             _build_extraction_prompt(term), max_tokens=_LLM_MAX_TOKENS
         )
     except Exception:  # noqa: BLE001 — NotImplementedError (Phase 1-3 stub)
@@ -365,6 +370,7 @@ async def _resolve_term(
             term=term,
         )
 
+    raw_extraction = groq_result.text
     parsed = _parse_llm_extraction(raw_extraction)
     if parsed is None:
         return ResolutionResult(

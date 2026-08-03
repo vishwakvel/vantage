@@ -26,7 +26,7 @@ tests/services/test_comparables_source.py's boundary-mock convention).
 import math
 import re
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 import pytest
@@ -409,3 +409,75 @@ async def test_alternate_row_label_resolves() -> None:
     ]
     assert len(revenue_rows) == 1
     assert revenue_rows[0]["value"] == pytest.approx(1000.0)
+
+
+# ---------------------------------------------------------------------------
+# increment_api_call_count instrumentation (OBS-02, D-05, 12-07-PLAN.md)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_quarterly_metrics_awards_three_increments() -> None:
+    """One get_quarterly_metrics call awards exactly three increments — one
+    per underlying yfinance fetch, not one per method call."""
+    source = FinancialMetricsSource()
+
+    with (
+        patch(
+            "app.services.financial_metrics_source.yfinance.Ticker",
+            new=_fake_ticker_factory(
+                income_stmt=_full_income_stmt(),
+                balance_sheet=_full_balance_sheet(),
+                cashflow=_full_cashflow(),
+            ),
+        ),
+        patch(
+            "app.services.financial_metrics_source.increment_api_call_count",
+            new_callable=AsyncMock,
+        ) as mock_increment,
+    ):
+        await source.get_quarterly_metrics("AAPL")
+
+    assert mock_increment.await_count == 3
+
+
+async def test_get_quarterly_metrics_return_value_unchanged_when_counter_backend_fails() -> (
+    None
+):
+    """A failing counter backend (e.g. Redis down) never changes
+    get_quarterly_metrics's return value — increment_api_call_count is
+    fail-soft by construction (plan 12-03)."""
+    from app.services.api_call_counter import set_current_plan_id
+
+    source = FinancialMetricsSource()
+    set_current_plan_id("plan-counter-fail-metrics")
+
+    try:
+        with (
+            patch(
+                "app.services.financial_metrics_source.yfinance.Ticker",
+                new=_fake_ticker_factory(
+                    income_stmt=_full_income_stmt(),
+                    balance_sheet=_full_balance_sheet(),
+                    cashflow=_full_cashflow(),
+                ),
+            ),
+            patch(
+                "app.services.api_call_counter._redis",
+                side_effect=ConnectionError("redis down"),
+            ),
+        ):
+            rows_with_failing_counter = await source.get_quarterly_metrics("AAPL")
+    finally:
+        set_current_plan_id(None)
+
+    with patch(
+        "app.services.financial_metrics_source.yfinance.Ticker",
+        new=_fake_ticker_factory(
+            income_stmt=_full_income_stmt(),
+            balance_sheet=_full_balance_sheet(),
+            cashflow=_full_cashflow(),
+        ),
+    ):
+        rows_without_counter_involved = await source.get_quarterly_metrics("AAPL")
+
+    assert rows_with_failing_counter == rows_without_counter_involved

@@ -43,8 +43,25 @@ from app.db.models import (
 )
 from app.ingestion.section_constants import SECTION_MACRO
 from app.services.fred_client import MACRO_SERIES
+from app.services.groq_client import GroqResult
 
 pytestmark = pytest.mark.anyio
+
+
+def _make_groq_result(
+    text: str, *, prompt_tokens: int = 111, completion_tokens: int = 222
+) -> GroqResult:
+    """Build a ``GroqResult`` for mocking ``call_groq`` in this test module."""
+    return GroqResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        usage_metadata={
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +148,11 @@ async def test_status_success_all_series(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.macro_sector.call_groq",
-            AsyncMock(return_value="A macro narrative contextualizing AAPL's sector."),
+            AsyncMock(
+                return_value=_make_groq_result(
+                    "A macro narrative contextualizing AAPL's sector."
+                )
+            ),
         ),
     ):
         result = await macro_sector_node(state)
@@ -139,7 +160,7 @@ async def test_status_success_all_series(db_session: AsyncSession) -> None:
     assert result["macro_status"] == AgentTaskStatus.SUCCESS.value
     output = result["macro_output"]
     assert output is not None
-    assert output["narrative"]
+    assert output["narrative"] == "A macro narrative contextualizing AAPL's sector."
     assert output["section"] == SECTION_MACRO
     assert len(output["citations"]) == len(MACRO_SERIES)
     citation_series_ids = {c["series_id"] for c in output["citations"]}
@@ -159,6 +180,8 @@ async def test_status_success_all_series(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
+    assert output_row.prompt_tokens == 111
+    assert output_row.completion_tokens == 222
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +219,11 @@ async def test_status_partial_missing_series(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.macro_sector.call_groq",
-            AsyncMock(return_value="A macro narrative with partial coverage."),
+            AsyncMock(
+                return_value=_make_groq_result(
+                    "A macro narrative with partial coverage."
+                )
+            ),
         ),
     ):
         result = await macro_sector_node(state)
@@ -218,6 +245,10 @@ async def test_status_partial_missing_series(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert output_row.missing_fields == [_REASONS["partial_macro_data"]]
+    # A Groq call DID complete on this path (only the source fetch was
+    # partial), so token counts are real, not NULL.
+    assert output_row.prompt_tokens == 111
+    assert output_row.completion_tokens == 222
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +279,7 @@ async def test_status_failed_zero_series(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.macro_sector.call_groq",
-            AsyncMock(return_value="unused"),
+            AsyncMock(return_value=_make_groq_result("unused")),
         ) as mock_call_groq,
     ):
         result = await macro_sector_node(state)
@@ -270,6 +301,9 @@ async def test_status_failed_zero_series(db_session: AsyncSession) -> None:
         )
     ).scalar_one()
     assert output_row.missing_fields == [_REASONS["no_macro_data"]]
+    # No Groq call ever happened on this path — NULL, not a fake zero.
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +352,9 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
         )
     ).scalar_one()
     assert output_row.missing_fields == [_REASONS["llm_error"]]
+    # A raising call_groq never completes — NULL, not a fake zero.
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +381,11 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         ),
         patch(
             "app.agents.macro_sector.call_groq",
-            AsyncMock(return_value="A macro narrative contextualizing AAPL's sector."),
+            AsyncMock(
+                return_value=_make_groq_result(
+                    "A macro narrative contextualizing AAPL's sector."
+                )
+            ),
         ),
     ):
         await macro_sector_node(state)

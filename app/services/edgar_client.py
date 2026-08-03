@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from app.services.api_call_counter import increment_api_call_count
+
 # ---------------------------------------------------------------------------
 # EDGAR configuration constants
 # ---------------------------------------------------------------------------
@@ -65,7 +67,12 @@ class EDGARClient:
 
         Returns:
             The httpx.Response from EDGAR.
+
+        Increments the ambient plan-scoped external-API call counter (D-05,
+        OBS-02) before issuing the request; a true no-op outside a research
+        run (no plan id in scope, no Redis connection opened).
         """
+        await increment_api_call_count()
         return await self._client.get(path, **kwargs)
 
     async def get_archive(self, path: str, **kwargs: Any) -> httpx.Response:
@@ -82,7 +89,12 @@ class EDGARClient:
 
         Returns:
             The httpx.Response containing the raw filing document (HTML or text).
+
+        Increments the ambient plan-scoped external-API call counter (D-05,
+        OBS-02) before issuing the request; a true no-op outside a research
+        run (no plan id in scope, no Redis connection opened).
         """
+        await increment_api_call_count()
         return await self._archive_client.get(path, **kwargs)
 
     async def close(self) -> None:

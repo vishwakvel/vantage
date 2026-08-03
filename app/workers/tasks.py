@@ -20,7 +20,10 @@ of them are reused from a prior (now-closed) task's event loop — reusing an
 asyncpg connection or httpx.AsyncClient bound to a closed loop raises
 "RuntimeError: Event loop is closed" (see
 ``app/db/session.py::reset_session_factory`` docstring, which the other
-four resets mirror exactly).
+four resets mirror exactly). The ambient plan-id scope (see
+``_run_research_async``) is set inside the async body precisely so it
+cannot outlive this task's own context — it lives in the Task-local
+context copy ``asyncio.run`` creates, not in this module-level state.
 """
 
 from __future__ import annotations
@@ -37,12 +40,14 @@ from app.ingestion.section_constants import (
     SECTION_ANOMALIES,
     SECTION_COMPARABLES,
     SECTION_CONTRADICTIONS,
+    SECTION_COST,
     SECTION_FUNDAMENTALS,
     SECTION_MACRO,
     SECTION_RISKS,
     SECTION_SENTIMENT,
     SECTION_SYNTHESIS,
 )
+from app.services.api_call_counter import read_and_clear_api_call_count, set_current_plan_id
 from app.services.arxiv_client import reset_arxiv_client
 from app.services.edgar_client import reset_edgar_client
 from app.services.groq_client import reset_groq_client
@@ -102,17 +107,25 @@ async def _run_research_async(
 ) -> None:
     """Run the research graph and persist its result onto the existing memo.
 
-    Opens its own DB session via ``session_scope()`` (never a request-scoped
-    session — the task runs entirely outside any HTTP request lifecycle).
-    Never creates a second ``ResearchMemo`` row: the PENDING row was already
-    created by the dispatching endpoint (D-02), and ``parent_memo_id`` was
-    set at that creation time.
+    Sets the ambient plan-id scope first thing to establish the plan-scoped
+    external-API counter context (D-05, OBS-02) for the whole graph run —
+    this is the second of the two entry points ``api_call_counter.py``
+    names (the first is ``POST /research``'s EDGAR ingestion, set in
+    ``app/api/v1/research.py``); without it the five in-graph service
+    clients would resolve no plan id and silently no-op.
+
+    Then opens its own DB session via the session-scope context manager
+    (never a request-scoped session — the task runs entirely outside any
+    HTTP request lifecycle). Never creates a second ``ResearchMemo`` row:
+    the PENDING row was already created by the dispatching endpoint (D-02),
+    and ``parent_memo_id`` was set at that creation time.
 
     If the graph invocation or body assembly raises unexpectedly, the memo
     is forced to FAILED and a terminal FAILED event is published so a memo
     never hangs in RUNNING (belt-and-suspenders — the graph's own node
     functions never raise per Phase 4/5).
     """
+    set_current_plan_id(plan_id)
     async with session_scope() as session:
         result = await session.execute(
             select(ResearchMemo).where(ResearchMemo.id == memo_id)
@@ -156,6 +169,8 @@ async def _run_research_async(
                     AgentTask.agent_type,
                     AgentTask.created_at,
                     AgentOutput.missing_fields,
+                    AgentOutput.prompt_tokens,
+                    AgentOutput.completion_tokens,
                 )
                 .join(AgentOutput, AgentOutput.task_id == AgentTask.id)
                 .where(
@@ -165,7 +180,14 @@ async def _run_research_async(
                 .order_by(AgentTask.created_at.desc())
             )
             reasons_by_agent_type: dict[str, str | None] = {}
-            for agent_type, _created_at, missing_fields in reason_result.all():
+            total_tokens = 0
+            for (
+                agent_type,
+                _created_at,
+                missing_fields,
+                prompt_tokens,
+                completion_tokens,
+            ) in reason_result.all():
                 # Latest AgentTask per agent_type wins — a plan may have
                 # prior runs' rows too (D-03 rerun lineage), and created_at
                 # desc surfaces this run's row first.
@@ -173,6 +195,13 @@ async def _run_research_async(
                     reasons_by_agent_type[agent_type] = _extract_reason(
                         missing_fields
                     )
+                    # MEMO-06/OBS-02: this run's own total generation cost —
+                    # deliberately token counts only, no monetary figure
+                    # (D-04, Groq free tier). Guarded with `or 0` because
+                    # these columns are nullable (12-02) and every agent has
+                    # failure branches that write an AgentOutput row without
+                    # ever completing a Groq call.
+                    total_tokens += (prompt_tokens or 0) + (completion_tokens or 0)
 
             body: dict[str, Any] = {}
             for section, (output_field, status_field) in _SECTION_STATE_FIELDS.items():
@@ -202,6 +231,20 @@ async def _run_research_async(
             # wholesale with narrative/status/reason and would otherwise
             # leave body.fundamentals.anomalies undefined for the frontend.
             body[SECTION_FUNDAMENTALS].setdefault(SECTION_ANOMALIES, [])
+
+            # MEMO-06/OBS-02: this run's total generation cost, assembled
+            # unconditionally so the key always survives into the persisted
+            # memo (Phase 7 body-assembly guarantee) — a run in which every
+            # agent failed still persists a zero token total rather than a
+            # missing key. Per D-04 this is deliberately token counts plus
+            # external API call counts only, never a monetary figure. The
+            # token total comes from this run's own AgentOutput rows
+            # (accumulated above); the call count comes from the
+            # plan-scoped Redis counter spanning EDGAR ingestion and the
+            # graph run (12-06/12-07), read exactly once here and cleared
+            # so a rerun of the same plan starts from zero.
+            api_calls = await read_and_clear_api_call_count(plan_id)
+            body[SECTION_COST] = {"tokens": total_tokens, "api_calls": api_calls}
 
             memo.status = ResearchMemoStatus(final_state["memo_status"])
             memo.body = body

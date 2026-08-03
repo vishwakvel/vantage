@@ -39,6 +39,8 @@ from typing import Any
 
 import yfinance
 
+from app.services.api_call_counter import increment_api_call_count
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -80,8 +82,14 @@ class ComparablesSource:
             A de-duplicated, upper-cased, validated list of peer tickers,
             capped at *limit*, excluding *ticker* itself. Empty on any
             failure or when no peer data is available.
+
+        Increments the external-API call counter (OBS-02) once per
+        underlying yfinance fetch it actually performs — up to two per
+        call, zero additional on the branch that returns early without an
+        industry key. Each increment no-ops outside a research run (D-05).
         """
         try:
+            await increment_api_call_count()
             info = await asyncio.to_thread(self._fetch_info, ticker)
         except Exception:
             return []
@@ -94,6 +102,7 @@ class ComparablesSource:
             return []
 
         try:
+            await increment_api_call_count()
             top_companies = await asyncio.to_thread(self._fetch_top_companies, industry_key)
         except Exception:
             return []
@@ -132,10 +141,15 @@ class ComparablesSource:
             keys ``ticker``, ``market_cap``, ``trailing_pe``,
             ``profit_margin``, ``revenue`` (values are ``None`` when the
             underlying yfinance field is absent).
+
+        Increments the external-API call counter (OBS-02) once per peer
+        ticker fetch — N peers produce N counted calls. No-ops outside a
+        research run (D-05).
         """
         results: list[dict[str, Any]] = []
         for t in tickers:
             try:
+                await increment_api_call_count()
                 info = await asyncio.to_thread(self._fetch_info, t)
             except Exception:
                 continue

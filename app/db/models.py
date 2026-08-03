@@ -630,11 +630,45 @@ class AgentOutput(Base):
     completeness = Column(SAEnum(AgentOutputCompleteness), nullable=False)
     missing_fields = Column(JSON, nullable=True)
     output = Column(JSON, nullable=False)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
+
+
+class RagasEvalResult(Base):
+    """Per-case RAGAS retrieval score from an offline golden-set eval run (D-10).
+
+    Deliberately carries NO ForeignKey to ``research_plans``,
+    ``research_memos``, or ``users`` — the golden set is authored
+    independently of any user's research run (D-07/D-08) and evaluates
+    ``hybrid_retrieve`` in the abstract, so there is no natural per-memo or
+    per-user relationship to model. Persisted for offline analysis only;
+    never displayed in any UI (D-10).
+    """
+
+    __tablename__ = "ragas_eval_results"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    run_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+    case_id = Column(String(100), nullable=False)
+    query = Column(Text, nullable=False)
+    ticker = Column(String(20), nullable=False)
+    context_precision = Column(Float, nullable=True)
+    context_recall = Column(Float, nullable=True)
+    retrieved_count = Column(Integer, nullable=True)
 
 
 class ChatMessage(Base):

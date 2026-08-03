@@ -101,3 +101,22 @@ async def test_string_last_price_is_coerced_to_float() -> None:
 def test_get_current_price_dispatches_through_a_worker_thread() -> None:
     """Source-level assertion that the coroutine offloads via asyncio.to_thread."""
     assert "to_thread" in inspect.getsource(LivePriceSource.get_current_price)
+
+
+# ---------------------------------------------------------------------------
+# api_call_counter exclusion (OBS-02, D-05, 12-07-PLAN.md)
+# ---------------------------------------------------------------------------
+
+
+def test_live_price_source_performs_zero_api_call_count_increments() -> None:
+    """live_price_source.py never imports or calls increment_api_call_count
+    — it is deliberately excluded from the external-API call counter
+    (reached only from alert evaluation, never a research run; see
+    app/services/api_call_counter.py's module docstring for the full
+    rationale). Regression guard for that documented exclusion."""
+    import inspect
+
+    import app.services.live_price_source as mod
+
+    source = inspect.getsource(mod)
+    assert "increment_api_call_count" not in source

@@ -54,6 +54,7 @@ from app.ingestion.section_constants import (
     SECTION_NOTES,
     SECTION_RISK_FACTORS,
 )
+from app.services.groq_client import GroqResult
 from tests.api.test_research_api import (
     RESEARCH_URL,
     _make_authed_client,
@@ -98,6 +99,47 @@ _RISK_NARRATIVE = "Structured risk narrative for AAPL."
 _MACRO_NARRATIVE = "Macro/sector narrative for AAPL."
 _COMPARABLES_NARRATIVE = "Relative-valuation narrative for AAPL."
 _SYNTHESIS_TAKE = "Distinct overall investment take on AAPL."
+
+# T-12-10-CROSSAGENT: this is the only test that runs all six agents
+# together, so each gets a DISTINCT (prompt_tokens, completion_tokens) pair.
+# A cross-contaminated token count in the fan-out surfaces as a concrete
+# assertion failure rather than passing silently on matching values.
+_FUNDAMENTALS_GROQ_RESULT = GroqResult(
+    text=_FUNDAMENTALS_NARRATIVE,
+    prompt_tokens=101,
+    completion_tokens=201,
+    usage_metadata={"input_tokens": 101, "output_tokens": 201, "total_tokens": 302},
+)
+_SENTIMENT_GROQ_RESULT = GroqResult(
+    text=_SENTIMENT_NARRATIVE,
+    prompt_tokens=102,
+    completion_tokens=202,
+    usage_metadata={"input_tokens": 102, "output_tokens": 202, "total_tokens": 304},
+)
+_RISK_GROQ_RESULT = GroqResult(
+    text=_RISK_NARRATIVE,
+    prompt_tokens=103,
+    completion_tokens=203,
+    usage_metadata={"input_tokens": 103, "output_tokens": 203, "total_tokens": 306},
+)
+_MACRO_GROQ_RESULT = GroqResult(
+    text=_MACRO_NARRATIVE,
+    prompt_tokens=104,
+    completion_tokens=204,
+    usage_metadata={"input_tokens": 104, "output_tokens": 204, "total_tokens": 308},
+)
+_COMPARABLES_GROQ_RESULT = GroqResult(
+    text=_COMPARABLES_NARRATIVE,
+    prompt_tokens=105,
+    completion_tokens=205,
+    usage_metadata={"input_tokens": 105, "output_tokens": 205, "total_tokens": 310},
+)
+_SYNTHESIS_GROQ_RESULT = GroqResult(
+    text=_SYNTHESIS_TAKE,
+    prompt_tokens=106,
+    completion_tokens=206,
+    usage_metadata={"input_tokens": 106, "output_tokens": 206, "total_tokens": 312},
+)
 
 
 def _make_chunk(section: str, idx: int) -> dict:
@@ -199,7 +241,7 @@ def _patch_all_agents(
         ),
         patch(
             "app.agents.fundamental_analysis.call_groq",
-            new=AsyncMock(return_value=_FUNDAMENTALS_NARRATIVE),
+            new=AsyncMock(return_value=_FUNDAMENTALS_GROQ_RESULT),
         ),
         # METRIC-01/02/03 (09-06): the node now unconditionally calls
         # persist_quarterly_metrics on its success path, which would
@@ -221,7 +263,7 @@ def _patch_all_agents(
         ),
         patch(
             "app.agents.sentiment_nlp.call_groq",
-            new=AsyncMock(return_value=_SENTIMENT_NARRATIVE),
+            new=AsyncMock(return_value=_SENTIMENT_GROQ_RESULT),
         ),
         # RiskAssessment — own session via the real session_scope().
         patch("app.agents.risk_assessment.hybrid_retrieve", return_value=chunks),
@@ -231,7 +273,7 @@ def _patch_all_agents(
         ),
         patch(
             "app.agents.risk_assessment.call_groq",
-            new=AsyncMock(return_value=_RISK_NARRATIVE),
+            new=AsyncMock(return_value=_RISK_GROQ_RESULT),
         ),
         # MacroSector — own session via the real session_scope().
         patch(
@@ -240,7 +282,7 @@ def _patch_all_agents(
         ),
         patch(
             "app.agents.macro_sector.call_groq",
-            new=AsyncMock(return_value=_MACRO_NARRATIVE),
+            new=AsyncMock(return_value=_MACRO_GROQ_RESULT),
         ),
         # ComparableCompanies — own session via the real session_scope().
         patch(
@@ -253,12 +295,12 @@ def _patch_all_agents(
         ),
         patch(
             "app.agents.comparable_companies.call_groq",
-            new=AsyncMock(return_value=_COMPARABLES_NARRATIVE),
+            new=AsyncMock(return_value=_COMPARABLES_GROQ_RESULT),
         ),
         # Synthesis — reads state["session"], no session_scope involved.
         patch(
             "app.agents.synthesis.call_groq",
-            new=AsyncMock(return_value=_SYNTHESIS_TAKE),
+            new=AsyncMock(return_value=_SYNTHESIS_GROQ_RESULT),
         ),
     ]
 

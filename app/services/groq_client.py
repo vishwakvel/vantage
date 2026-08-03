@@ -4,12 +4,20 @@ API calls.
 Capacity: ~6,000 tokens/min.  All Groq callers MUST use this module.
 Direct groq imports in app/agents/ or app/graph/ are prohibited and detected
 by the import guard test (plan 01-08).
+
+``call_groq`` returns a ``GroqResult`` (text plus prompt/completion token
+counts) rather than a bare string, and is decorated with LangSmith's
+``@traceable`` so every Groq call in the codebase emits an ``llm``-type
+trace when tracing is enabled (see ``call_groq``'s docstring for the
+data-exposure implication of turning tracing on).
 """
 
 import asyncio
 import time
+from dataclasses import dataclass
 
 from groq import AsyncGroq
+from langsmith import traceable
 
 from app.core.config import get_settings
 
@@ -118,19 +126,81 @@ def reset_groq_client() -> None:
     _client = None
 
 
+@dataclass(frozen=True)
+class GroqResult:
+    """Return shape for ``call_groq``: completion text plus usage.
+
+    ``usage_metadata`` is a real field rather than a computed property
+    because LangSmith reads token counts off the *serialized return value*
+    of a ``@traceable``-decorated function, and a property would not appear
+    in that serialization. Its three keys (``input_tokens``,
+    ``output_tokens``, ``total_tokens``) are the LangSmith-recognized names
+    for rendering token counts on a trace automatically.
+
+    RESEARCH.md Assumption A2: whether LangSmith's serializer surfaces this
+    field from a dataclass exactly as it does from a plain dict is verified
+    manually in plan 12-14. If it does not, the fallback is a plain-dict
+    return shape — ``prompt_tokens``/``completion_tokens`` remain the
+    authoritative source for OBS-02 regardless, since they feed the
+    ``AgentOutput`` database columns, not the LangSmith UI.
+    """
+
+    text: str
+    prompt_tokens: int
+    completion_tokens: int
+    usage_metadata: dict[str, int]
+
+
+def _build_groq_result(text: str, usage: object | None) -> GroqResult:
+    """Build a ``GroqResult`` from completion text and a Groq usage object.
+
+    Defensively extracts token counts (RESEARCH.md Pitfall 4): ``usage`` is
+    bound to a local first and only read from if truthy, defaulting each
+    count to 0. Never chain the attribute access straight off the response's
+    usage attribute unguarded — the installed SDK types ``usage`` as
+    optional, and an error-adjacent or streaming-shaped response would
+    otherwise raise an AttributeError from inside every agent node.
+    """
+    prompt_tokens = usage.prompt_tokens if usage else 0  # type: ignore[attr-defined]
+    completion_tokens = usage.completion_tokens if usage else 0  # type: ignore[attr-defined]
+    return GroqResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        usage_metadata={
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    )
+
+
+@traceable(run_type="llm", name="groq_chat_completion")
 async def call_groq(
     prompt: str,
     model: str = "llama-3.3-70b-versatile",
     max_tokens: int = 1024,
-) -> str:
+) -> GroqResult:
     """Perform a real, rate-limited Groq chat-completion call.
 
     Acquires *max_tokens* from the shared rate limiter before making any
     request to the Groq API, then sends a single-turn chat completion and
-    returns the response text. Groq SDK errors (APIConnectionError,
-    RateLimitError, APIStatusError) are not caught here — they propagate to
-    the caller; the SDK's own retry/backoff plus the rate limiter above
-    already cover transient failures, so no hand-rolled retry loop is added.
+    returns a ``GroqResult`` carrying the response text plus its usage.
+    Groq SDK errors (APIConnectionError, RateLimitError, APIStatusError) are
+    not caught here — they propagate to the caller; the SDK's own
+    retry/backoff plus the rate limiter above already cover transient
+    failures, so no hand-rolled retry loop is added.
+
+    This function is decorated with LangSmith's ``@traceable`` (run_type
+    "llm"), so every Groq call in the codebase emits a trace when tracing is
+    enabled. Tracing is optional and off by default: it activates only when
+    the LangSmith environment variables (``LANGSMITH_TRACING``,
+    ``LANGSMITH_API_KEY``) are set — the decorator itself checks these at
+    call time and executes this function normally, with no network call to
+    LangSmith, when they are unset. When tracing IS enabled, the full prompt
+    text and completion text of every agent call leave this application's
+    infrastructure and are sent to LangSmith's hosted backend — enable only
+    with that data-exposure implication in mind.
 
     Args:
         prompt:     The prompt text to send to Groq.
@@ -139,7 +209,9 @@ async def call_groq(
                     to the Groq API as the completion's max_tokens.
 
     Returns:
-        The completion text (response.choices[0].message.content).
+        A ``GroqResult`` whose ``text`` field carries what this function
+        used to return directly, plus ``prompt_tokens``/``completion_tokens``
+        and a LangSmith-shaped ``usage_metadata`` dict.
     """
     await groq_rate_limiter.acquire(max_tokens)
     client = _get_client(get_settings().GROQ_API_KEY)
@@ -148,4 +220,4 @@ async def call_groq(
         model=model,
         max_tokens=max_tokens,
     )
-    return response.choices[0].message.content
+    return _build_groq_result(response.choices[0].message.content, response.usage)

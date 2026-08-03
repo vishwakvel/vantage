@@ -31,7 +31,18 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.services.groq_client import GroqResult
 from app.services.ticker_resolver import CandidateMatch, ResolutionResult, resolve
+
+#: Minimal GroqResult factory for mocking call_groq's new return contract —
+#: only ``text`` matters to ticker_resolver (it never persists token counts).
+def _groq_result(text: str) -> GroqResult:
+    return GroqResult(
+        text=text,
+        prompt_tokens=10,
+        completion_tokens=5,
+        usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    )
 
 # ---------------------------------------------------------------------------
 # Fuzzy company-name match (D-01, D-02)
@@ -173,10 +184,14 @@ async def test_resolve_llm_fallback_degrades_gracefully_on_not_implemented() -> 
 
 @pytest.mark.anyio
 async def test_resolve_llm_fallback_uses_self_reported_confidence() -> None:
-    """A parseable LLM extraction sets method 'llm' with the LLM's own confidence (D-02)."""
+    """A parseable LLM extraction (GroqResult.text) sets method 'llm' with the
+    LLM's own confidence (D-02) — same parsing behavior the old bare-string
+    return produced."""
     with patch(
         "app.services.ticker_resolver.call_groq",
-        new=AsyncMock(return_value='{"ticker": "AAPL", "confidence": 0.92}'),
+        new=AsyncMock(
+            return_value=_groq_result('{"ticker": "AAPL", "confidence": 0.92}')
+        ),
     ) as mock_call_groq:
         results = await resolve(_INCONCLUSIVE_QUERY, session=None)
 
@@ -186,6 +201,24 @@ async def test_resolve_llm_fallback_uses_self_reported_confidence() -> None:
     assert result.method == "llm"
     assert result.ticker == "AAPL"
     assert result.confidence == 0.92
+
+
+@pytest.mark.anyio
+async def test_resolve_llm_fallback_degrades_on_unparseable_groq_result_text() -> None:
+    """A GroqResult whose text is not parseable JSON still degrades to the
+    existing inconclusive/fuzzy-candidates result rather than raising."""
+    with patch(
+        "app.services.ticker_resolver.call_groq",
+        new=AsyncMock(return_value=_groq_result("not json at all")),
+    ) as mock_call_groq:
+        results = await resolve(_INCONCLUSIVE_QUERY, session=None)
+
+    mock_call_groq.assert_awaited()
+    assert len(results) == 1
+    result = results[0]
+    assert result.ticker is None
+    assert result.method == "fuzzy"
+    assert len(result.candidates) <= 3
 
 
 # ---------------------------------------------------------------------------

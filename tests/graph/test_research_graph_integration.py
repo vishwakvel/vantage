@@ -16,6 +16,13 @@ graph to prove:
     (moved from ``app.api.v1.research.run_plan`` in 06-05) — the
     comparables section's key is never omitted and carries a non-null
     user-facing reason sourced from ``AgentOutput.missing_fields``.
+  - OBS-02/MEMO-06 (12-13): the only place in the project where all six
+    agent nodes run concurrently through the real compiled graph and each
+    persists its own ``AgentOutput`` row — proves the full aggregation
+    chain (agent writes its own tokens, aggregation reads them back, total
+    lands on the memo body) end to end, summing against
+    ``_patch_all_agents``' six distinct token pairs rather than a
+    hardcoded number.
 
 Reuses ``tests/api/test_run_api.py``'s ``_patch_all_agents`` (external
 service-boundary patches for all 6 agent modules) and
@@ -33,18 +40,24 @@ test-postgres via the fixture, never the dev DB.
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AgentOutput, AgentTask, ResearchPlan, ResearchRequest, User
 from app.graph.research_graph import build_research_graph
-from app.ingestion.section_constants import SECTION_COMPARABLES
+from app.ingestion.section_constants import SECTION_COMPARABLES, SECTION_COST
 from app.workers.tasks import (
     _AGENT_TYPE_BY_SECTION,
     _SECTION_STATE_FIELDS,
     _extract_reason,
 )
 from tests.api.test_run_api import (  # noqa: F401 — fixture imported for autouse
+    _COMPARABLES_GROQ_RESULT,
+    _FUNDAMENTALS_GROQ_RESULT,
+    _MACRO_GROQ_RESULT,
+    _RISK_GROQ_RESULT,
+    _SENTIMENT_GROQ_RESULT,
+    _SYNTHESIS_GROQ_RESULT,
     _patch_all_agents,
     _session_scope_targets_test_db,
 )
@@ -123,15 +136,35 @@ def _build_initial_state(db_session: AsyncSession, plan: ResearchPlan, user: Use
     }
 
 
-async def _assemble_memo_body(db_session: AsyncSession, plan: ResearchPlan, final_state: dict) -> dict:
+async def _assemble_memo_body(
+    db_session: AsyncSession,
+    plan: ResearchPlan,
+    final_state: dict,
+    api_calls: int = 0,
+) -> dict:
     """Replicates app.workers.tasks._run_research_async's memo body assembly
     exactly (moved there from app.api.v1.research.run_plan in 06-05), so
     this graph-level integration test can assert on the SAME EXEC-04
     section-never-omitted / reason-sourcing behavior the background task
-    persists, without going through Celery.
+    persists, without going through Celery. This is a DELIBERATE REPLICA of
+    the production assembly and MUST be updated whenever that assembly
+    changes (see 12-13-PLAN.md T-12-13-DRIFT).
+
+    ``api_calls`` is taken as a plain argument rather than calling
+    ``read_and_clear_api_call_count`` here: this test proves the token half
+    of the MEMO-06/OBS-02 cost chain through the real graph, the Redis half
+    is already covered by ``tests/workers/test_tasks.py``'s unit tests, and
+    reaching for Redis from a graph integration test would add an
+    infrastructure dependency for no new coverage.
     """
     reason_result = await db_session.execute(
-        select(AgentTask.agent_type, AgentTask.created_at, AgentOutput.missing_fields)
+        select(
+            AgentTask.agent_type,
+            AgentTask.created_at,
+            AgentOutput.missing_fields,
+            AgentOutput.prompt_tokens,
+            AgentOutput.completion_tokens,
+        )
         .join(AgentOutput, AgentOutput.task_id == AgentTask.id)
         .where(
             AgentTask.plan_id == plan.id,
@@ -140,9 +173,17 @@ async def _assemble_memo_body(db_session: AsyncSession, plan: ResearchPlan, fina
         .order_by(AgentTask.created_at.desc())
     )
     reasons_by_agent_type: dict[str, str | None] = {}
-    for agent_type, _created_at, missing_fields in reason_result.all():
+    total_tokens = 0
+    for (
+        agent_type,
+        _created_at,
+        missing_fields,
+        prompt_tokens,
+        completion_tokens,
+    ) in reason_result.all():
         if agent_type not in reasons_by_agent_type:
             reasons_by_agent_type[agent_type] = _extract_reason(missing_fields)
+            total_tokens += (prompt_tokens or 0) + (completion_tokens or 0)
 
     body: dict = {}
     for section, (output_field, status_field) in _SECTION_STATE_FIELDS.items():
@@ -156,6 +197,7 @@ async def _assemble_memo_body(db_session: AsyncSession, plan: ResearchPlan, fina
                 "status": final_state.get(status_field),
                 "reason": reasons_by_agent_type.get(agent_type),
             }
+    body[SECTION_COST] = {"tokens": total_tokens, "api_calls": api_calls}
     return body
 
 
@@ -281,3 +323,59 @@ async def test_one_agent_failure_yields_partial_with_reason(
     assert "reason" not in body["risks"]
     assert "reason" not in body["macro"]
     assert "reason" not in body["synthesis"]
+
+
+# ---------------------------------------------------------------------------
+# OBS-02/MEMO-06 — cost aggregation proven end to end through the real graph
+# ---------------------------------------------------------------------------
+
+
+async def test_cost_aggregation_sums_all_six_agents_real_tokens(
+    db_session: AsyncSession,
+) -> None:
+    """The all-success path through the real 6-agent graph proves the full
+    OBS-02 chain: each agent writes its own AgentOutput token columns, the
+    assembled memo body's cost.tokens equals the exact sum of the six
+    DISTINCT prompt-plus-completion pairs ``_patch_all_agents`` supplies
+    (derived, not hardcoded, so this stays correct if those values are ever
+    adjusted), and exactly six AgentOutput rows for the plan carry non-null
+    token columns — so a passing sum cannot be produced by coincidence from
+    fewer rows. Because the six values are distinct, this assertion fails
+    loudly on cross-agent contamination, a dropped agent, or a double-
+    counted agent."""
+    user = await _seed_user(db_session)
+    plan = await _seed_plan(db_session, user)
+    state = _build_initial_state(db_session, plan, user)
+
+    with _patch_all_agents():
+        final_state = await build_research_graph().ainvoke(state)
+
+    assert final_state["memo_status"] == "COMPLETE"
+
+    expected_total_tokens = sum(
+        result.prompt_tokens + result.completion_tokens
+        for result in (
+            _FUNDAMENTALS_GROQ_RESULT,
+            _SENTIMENT_GROQ_RESULT,
+            _RISK_GROQ_RESULT,
+            _MACRO_GROQ_RESULT,
+            _COMPARABLES_GROQ_RESULT,
+            _SYNTHESIS_GROQ_RESULT,
+        )
+    )
+
+    body = await _assemble_memo_body(db_session, plan, final_state, api_calls=3)
+
+    assert body[SECTION_COST] == {"tokens": expected_total_tokens, "api_calls": 3}
+
+    non_null_token_rows = await db_session.execute(
+        select(func.count())
+        .select_from(AgentOutput)
+        .join(AgentTask, AgentOutput.task_id == AgentTask.id)
+        .where(
+            AgentTask.plan_id == plan.id,
+            AgentOutput.prompt_tokens.is_not(None),
+            AgentOutput.completion_tokens.is_not(None),
+        )
+    )
+    assert non_null_token_rows.scalar_one() == 6

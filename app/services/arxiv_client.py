@@ -16,6 +16,8 @@ from xml.etree import ElementTree
 
 import httpx
 
+from app.services.api_call_counter import increment_api_call_count
+
 # ---------------------------------------------------------------------------
 # arXiv configuration constants
 # ---------------------------------------------------------------------------
@@ -51,7 +53,12 @@ class ArxivClient:
         Returns:
             A list of dicts with keys: ``title``, ``abstract``, ``url``,
             ``published``.
+
+        Increments the external-API call counter (OBS-02) once for this
+        outbound request; the increment no-ops outside a research run (D-05).
         """
+        await increment_api_call_count()
+
         response = await self._client.get(
             "/api/query",
             params={

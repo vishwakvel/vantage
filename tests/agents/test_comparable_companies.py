@@ -44,8 +44,25 @@ from app.db.models import (
     User,
 )
 from app.ingestion.section_constants import SECTION_COMPARABLES
+from app.services.groq_client import GroqResult
 
 pytestmark = pytest.mark.anyio
+
+
+def _make_groq_result(
+    text: str, *, prompt_tokens: int = 333, completion_tokens: int = 444
+) -> GroqResult:
+    """Build a ``GroqResult`` for mocking ``call_groq`` in this test module."""
+    return GroqResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        usage_metadata={
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -144,14 +161,18 @@ async def test_status_success_all_peer_metrics(db_session: AsyncSession) -> None
         ),
         patch(
             "app.agents.comparable_companies.call_groq",
-            AsyncMock(return_value="AAPL trades at a premium to its peers."),
+            AsyncMock(
+                return_value=_make_groq_result(
+                    "AAPL trades at a premium to its peers."
+                )
+            ),
         ),
     ):
         result = await comparable_companies_node(state)
 
     assert result["comparables_status"] == AgentTaskStatus.SUCCESS.value
     output = result["comparables_output"]
-    assert output["narrative"]
+    assert output["narrative"] == "AAPL trades at a premium to its peers."
     assert output["peers"] == peers
     assert output["section"] == SECTION_COMPARABLES
     assert {c["ticker"] for c in output["citations"]} == set(peers)
@@ -170,6 +191,8 @@ async def test_status_success_all_peer_metrics(db_session: AsyncSession) -> None
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
+    assert output_row.prompt_tokens == 333
+    assert output_row.completion_tokens == 444
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +226,9 @@ async def test_status_partial_missing_some_metrics(db_session: AsyncSession) -> 
         ),
         patch(
             "app.agents.comparable_companies.call_groq",
-            AsyncMock(return_value="AAPL trades at a premium to MSFT."),
+            AsyncMock(
+                return_value=_make_groq_result("AAPL trades at a premium to MSFT.")
+            ),
         ),
     ):
         result = await comparable_companies_node(state)
@@ -225,6 +250,10 @@ async def test_status_partial_missing_some_metrics(db_session: AsyncSession) -> 
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert output_row.missing_fields
     assert "metrics unavailable for some peers" in output_row.missing_fields
+    # A Groq call DID complete on this path (only peer metrics were
+    # partial), so token counts are real, not NULL.
+    assert output_row.prompt_tokens == 333
+    assert output_row.completion_tokens == 444
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +284,7 @@ async def test_status_failed_empty_peers(db_session: AsyncSession) -> None:
         ) as mock_get_metrics,
         patch(
             "app.agents.comparable_companies.call_groq",
-            AsyncMock(return_value="unused"),
+            AsyncMock(return_value=_make_groq_result("unused")),
         ) as mock_call_groq,
     ):
         result = await comparable_companies_node(state)
@@ -279,6 +308,10 @@ async def test_status_failed_empty_peers(db_session: AsyncSession) -> None:
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert "no peer set could be constructed for AAPL" in output_row.missing_fields
+    # The no-peers branch never reaches Groq — NULL, not a fake zero
+    # (Behavior 3 / T-12-10-FAKEZERO).
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +365,9 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
         )
     ).scalar_one()
     assert output_row.missing_fields == "Comparable-companies analysis unavailable — analysis engine error"
+    # A raising call_groq never completes — NULL, not a fake zero.
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +400,11 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         ),
         patch(
             "app.agents.comparable_companies.call_groq",
-            AsyncMock(return_value="AAPL trades at a premium to its peers."),
+            AsyncMock(
+                return_value=_make_groq_result(
+                    "AAPL trades at a premium to its peers."
+                )
+            ),
         ),
     ):
         await comparable_companies_node(state)

@@ -185,9 +185,10 @@ async def comparable_companies_node(state: dict[str, Any]) -> dict[str, Any]:
             metrics = await comparables_source.get_metrics(peers)
             citations = [_build_citation(metric) for metric in metrics]
 
-            narrative = await call_groq(
+            groq_result = await call_groq(
                 _build_prompt(ticker, metrics), max_tokens=_MAX_TOKENS
             )
+            narrative = groq_result.text
             output = {
                 "narrative": narrative,
                 "peers": peers,
@@ -213,6 +214,8 @@ async def comparable_companies_node(state: dict[str, Any]) -> dict[str, Any]:
                     completeness=completeness,
                     missing_fields=missing_fields,
                     output=output,
+                    prompt_tokens=groq_result.prompt_tokens,
+                    completion_tokens=groq_result.completion_tokens,
                 )
             )
             await session.commit()

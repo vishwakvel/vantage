@@ -7,6 +7,8 @@ Tests verify:
   - importing this module never triggers any network call
 """
 
+from unittest.mock import AsyncMock, patch
+
 import httpx
 import pytest
 
@@ -121,6 +123,76 @@ async def test_search_empty_feed_returns_empty_list() -> None:
     await client.close()
 
     assert papers == []
+
+
+# ---------------------------------------------------------------------------
+# increment_api_call_count instrumentation (OBS-02, D-05, 12-07-PLAN.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_search_increments_counter_once() -> None:
+    """One search() call awaits increment_api_call_count exactly once."""
+    client = ArxivClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_CANNED_ATOM_TWO_ENTRIES.encode("utf-8"),
+            headers={"content-type": "application/atom+xml"},
+        )
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=ARXIV_BASE_URL,
+    )
+
+    with patch(
+        "app.services.arxiv_client.increment_api_call_count", new_callable=AsyncMock
+    ) as mock_increment:
+        await client.search("sector momentum")
+
+    await client.close()
+
+    mock_increment.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_search_return_value_unchanged_when_counter_backend_fails() -> None:
+    """A failing counter backend (e.g. Redis down) never changes search()'s
+    return value — increment_api_call_count is fail-soft by construction
+    (plan 12-03)."""
+    from app.services.api_call_counter import set_current_plan_id
+
+    set_current_plan_id("plan-counter-fail-arxiv")
+
+    client = ArxivClient()
+
+    async def mock_transport(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_CANNED_ATOM_TWO_ENTRIES.encode("utf-8"),
+            headers={"content-type": "application/atom+xml"},
+        )
+
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(mock_transport),
+        base_url=ARXIV_BASE_URL,
+    )
+
+    try:
+        with patch(
+            "app.services.api_call_counter._redis",
+            side_effect=ConnectionError("redis down"),
+        ):
+            papers = await client.search("sector momentum")
+    finally:
+        set_current_plan_id(None)
+
+    await client.close()
+
+    assert len(papers) == 2
+    assert "Transformer" in papers[0]["title"]
 
 
 # ---------------------------------------------------------------------------

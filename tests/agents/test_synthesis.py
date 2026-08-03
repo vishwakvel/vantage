@@ -49,8 +49,30 @@ from app.db.models import (
     ResearchRequest,
     User,
 )
+from app.services.groq_client import GroqResult
 
 pytestmark = pytest.mark.anyio
+
+
+def _make_groq_result(
+    text: str, *, prompt_tokens: int = 555, completion_tokens: int = 666
+) -> GroqResult:
+    """Build a ``GroqResult`` for mocking ``call_groq`` in this test module.
+
+    ``text`` must be exactly the completion string the test wants
+    ``_split_narrative_and_json`` to receive — this helper never rewords or
+    reshapes the caller's text.
+    """
+    return GroqResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        usage_metadata={
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -376,10 +398,12 @@ async def test_synthesis_reads_fundamentals_output(db_session: AsyncSession) -> 
 
     captured_prompt = None
 
-    async def _fake_call_groq(prompt: str, **kwargs: object) -> str:
+    async def _fake_call_groq(prompt: str, **kwargs: object) -> GroqResult:
         nonlocal captured_prompt
         captured_prompt = prompt
-        return "Overall, AAPL presents a compelling investment case."
+        return _make_groq_result(
+            "Overall, AAPL presents a compelling investment case."
+        )
 
     with patch(
         "app.agents.synthesis.call_groq", AsyncMock(side_effect=_fake_call_groq)
@@ -410,12 +434,27 @@ async def test_memo_status_complete_all_six_success(db_session: AsyncSession) ->
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(return_value="An overall take."),
+        AsyncMock(return_value=_make_groq_result("An overall take.")),
     ):
         result = await synthesis_node(state)
 
     assert result["synthesis_status"] == AgentTaskStatus.SUCCESS.value
     assert result["memo_status"] == "COMPLETE"
+
+    task_row = (
+        await db_session.execute(
+            select(AgentTask).where(
+                AgentTask.plan_id == plan.id, AgentTask.agent_type == "Synthesis"
+            )
+        )
+    ).scalar_one()
+    output_row = (
+        await db_session.execute(
+            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
+        )
+    ).scalar_one()
+    assert output_row.prompt_tokens == 555
+    assert output_row.completion_tokens == 666
 
 
 async def test_memo_status_partial_on_one_specialist_failed(
@@ -444,7 +483,11 @@ async def test_memo_status_partial_on_one_specialist_failed(
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(return_value="An overall take despite missing fundamentals."),
+        AsyncMock(
+            return_value=_make_groq_result(
+                "An overall take despite missing fundamentals."
+            )
+        ),
     ):
         result = await synthesis_node(state)
 
@@ -478,7 +521,7 @@ async def test_memo_status_partial_on_partial_specialist(
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(return_value="An overall take."),
+        AsyncMock(return_value=_make_groq_result("An overall take.")),
     ):
         result = await synthesis_node(state)
 
@@ -562,6 +605,9 @@ async def test_synthesis_never_raises(db_session: AsyncSession) -> None:
     # exception path previously hardcoded regardless of what actually failed.
     assert output_row.missing_fields != ["take"]
     assert "take" not in output_row.missing_fields
+    # A raising call_groq never completes — NULL, not a fake zero.
+    assert output_row.prompt_tokens is None
+    assert output_row.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +627,7 @@ async def test_one_agenttask_and_one_agentoutput_persisted(
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(return_value="An overall take."),
+        AsyncMock(return_value=_make_groq_result("An overall take.")),
     ):
         await synthesis_node(state)
 
@@ -625,7 +671,7 @@ async def test_synthesis_degrades_gracefully_on_bad_contradictions_json(
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(return_value=raw_response),
+        AsyncMock(return_value=_make_groq_result(raw_response)),
     ):
         result = await synthesis_node(state)
 
@@ -651,7 +697,7 @@ async def test_synthesis_empty_contradictions_is_valid(
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(return_value=raw_response),
+        AsyncMock(return_value=_make_groq_result(raw_response)),
     ):
         result = await synthesis_node(state)
 
@@ -689,7 +735,7 @@ async def test_synthesis_populated_contradictions(db_session: AsyncSession) -> N
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(return_value=raw_response),
+        AsyncMock(return_value=_make_groq_result(raw_response)),
     ):
         result = await synthesis_node(state)
 

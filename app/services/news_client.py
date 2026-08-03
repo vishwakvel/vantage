@@ -23,6 +23,8 @@ from typing import Any
 
 import httpx
 
+from app.services.api_call_counter import increment_api_call_count
+
 # ---------------------------------------------------------------------------
 # NewsAPI configuration constants
 # ---------------------------------------------------------------------------
@@ -63,10 +65,15 @@ class NewsAPIClient:
             ``description``, ``content``, ``url``, ``source``,
             ``published_at``. Missing upstream fields are tolerated via
             ``.get(...)``.
+
+        Increments the external-API call counter (OBS-02) once for this
+        outbound request; the increment no-ops outside a research run (D-05).
         """
         api_key = self._api_key()
         if not api_key:
             raise ValueError("NEWS_API_KEY not set")
+
+        await increment_api_call_count()
 
         response = await self._client.get(
             "/everything",
