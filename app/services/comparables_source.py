@@ -4,17 +4,30 @@ D-05: this module resolves the phase's one genuinely open design question —
 how to (a) construct a peer set for a ticker and (b) source comparison
 metrics for those peers — using free-tier `yfinance` data.
 
-Peer-set construction (get_peers) works by reading the ticker's
-``industryKey`` from ``Ticker(ticker).info`` and then looking up that
-industry's top constituent companies via the yfinance ``Industry``
-constituent list (a DataFrame indexed by ticker symbol, ranked by market
-weight within the industry). This is the closest thing yfinance exposes to
-a "peers" API — there is no dedicated peer-list field on ``Ticker.info``.
-When the industry key is absent, the lookup fails, or the industry has no
-constituent data, ``get_peers`` returns an empty list rather than
-fabricating peers; callers (the ComparableCompanies agent, Plan 08) MUST
-treat an empty peer list as a genuine "no comparables available" signal and
-degrade to PARTIAL, per the phase's fallback policy.
+Peer-set construction (get_peers) is a three-step contract (DEBT-02):
+
+1. Industry primary (D-06): read the subject's ``industryKey`` from
+   ``Ticker(ticker).info`` and look up that industry's top constituents
+   via the yfinance ``Industry`` constituent list (a DataFrame indexed by
+   ticker symbol, ranked by market weight within the industry). This is
+   the closest thing yfinance exposes to a "peers" API — there is no
+   dedicated peer-list field on ``Ticker.info``.
+2. Sector fallback (D-07): when the industry pass yields fewer than
+   ``_SECTOR_FALLBACK_MIN_PEERS`` same-scale peers (or the industry
+   lookup fails/returns nothing), fall back to the subject's ``sectorKey``
+   top constituents via the yfinance ``Sector`` constituent list. Sector
+   is only ever a fallback; industry stays primary.
+3. Market-cap proximity (D-08): candidates from either pass whose market
+   cap falls outside ``_MARKET_CAP_RATIO_FLOOR``x-
+   ``_MARKET_CAP_RATIO_CEILING``x the subject's market cap are dropped —
+   this is what strips the micro-caps that dominate a narrow industry
+   bucket like AAPL's "consumer-electronics".
+
+When neither key is present, every lookup fails, or proximity screening
+legitimately empties the list, ``get_peers`` returns an empty list rather
+than fabricating peers; callers (the ComparableCompanies agent) MUST treat
+an empty peer list as a genuine "no comparables available" signal and
+degrade to PARTIAL, per the phase's fallback policy (D-10).
 
 yfinance imports are confined to ``app/services/`` (services-boundary rule).
 Two modules hold them: this one, for cross-sectional peer data, and
@@ -85,19 +98,31 @@ class ComparablesSource:
     """
 
     async def get_peers(self, ticker: str, *, limit: int = _DEFAULT_PEER_LIMIT) -> list[str]:
-        """Return up to *limit* peer tickers for *ticker*, excluding itself.
+        """Return up to *limit* same-scale peer tickers for *ticker*, excluding itself.
 
-        Construction: read the ticker's ``industryKey`` from
-        ``Ticker(ticker).info``, then look up that industry's top
-        constituent companies via the yfinance ``Industry`` constituent
-        list. Raw constituents are self-excluded, de-duplicated and
-        ticker-pattern validated by ``_extract_candidates``, then screened
-        for market-cap proximity to the subject: a candidate outside
-        ``_MARKET_CAP_RATIO_FLOOR``x-``_MARKET_CAP_RATIO_CEILING``x the
-        subject's market cap is dropped (D-08). If the industry key is
-        missing or the lookup fails/returns no data, returns ``[]`` — never
-        fabricates peers. A subject whose info carries no ``marketCap``
-        skips proximity screening entirely.
+        Three-step construction:
+
+        1. Industry pass (primary, D-06): read the subject's ``industryKey``
+           from ``Ticker(ticker).info`` and look up that industry's top
+           constituents via the yfinance ``Industry`` constituent list.
+        2. Sector fallback (D-07): when the industry pass yields fewer than
+           ``_SECTOR_FALLBACK_MIN_PEERS`` same-scale peers, also pull the
+           subject's ``sectorKey`` top constituents via the yfinance
+           ``Sector`` constituent list. Industry is always primary; sector
+           is only ever a fallback. A broken/empty industry lookup also
+           falls through to the sector pass.
+        3. Both passes are self-excluded, de-duplicated (across passes, via
+           one shared ``seen`` set) and ticker-pattern validated by
+           ``_extract_candidates``, then screened for market-cap proximity:
+           a candidate outside ``_MARKET_CAP_RATIO_FLOOR``x-
+           ``_MARKET_CAP_RATIO_CEILING``x the subject's market cap is
+           dropped (D-08). A subject whose info carries no ``marketCap``
+           skips proximity screening entirely.
+
+        If neither key is present, or every lookup fails/returns no data,
+        returns ``[]`` — never fabricates peers. The ComparableCompanies
+        agent treats an empty list as a genuine no-comparables signal and
+        degrades to PARTIAL (D-10).
 
         Args:
             ticker: The subject ticker to find peers for.
@@ -110,12 +135,13 @@ class ComparablesSource:
 
         Increments the external-API call counter (OBS-02) once per
         underlying yfinance fetch it actually performs: the subject info
-        fetch, plus the industry fetch, plus at most
-        ``_CANDIDATE_SCREEN_LIMIT`` candidate info fetches during proximity
-        screening (zero of those when the subject has no ``marketCap``).
-        The branch that returns early without an industry key performs just
-        the one subject fetch. Each increment no-ops outside a research run
-        (D-05).
+        fetch, plus one industry fetch (when ``industryKey`` is present),
+        plus one sector fetch (only when the fallback fires), plus at most
+        ``_CANDIDATE_SCREEN_LIMIT`` candidate info fetches per screened
+        source during proximity screening (zero of those when the subject
+        has no ``marketCap``). A subject with neither ``industryKey`` nor
+        ``sectorKey`` performs exactly the one subject fetch. Each increment
+        no-ops outside a research run (D-05).
         """
         try:
             await increment_api_call_count()
@@ -128,22 +154,46 @@ class ComparablesSource:
 
         subject_market_cap = info.get("marketCap")
         industry_key = info.get("industryKey")
-        if not industry_key:
-            return []
-
-        try:
-            await increment_api_call_count()
-            top_companies = await asyncio.to_thread(self._fetch_top_companies, industry_key)
-        except Exception:
-            return []
-
-        if top_companies is None or getattr(top_companies, "empty", True):
-            return []
+        sector_key = info.get("sectorKey")
 
         upper_ticker = ticker.upper()
         seen: set[str] = set()
-        candidates = self._extract_candidates(top_companies, upper_ticker, seen)
-        return await self._screen_by_market_cap(candidates, subject_market_cap, limit)
+        peers: list[str] = []
+
+        # Industry pass — primary peer source (D-06).
+        if industry_key:
+            try:
+                await increment_api_call_count()
+                top_companies = await asyncio.to_thread(self._fetch_top_companies, industry_key)
+            except Exception:
+                top_companies = None
+
+            if top_companies is not None and not getattr(top_companies, "empty", True):
+                candidates = self._extract_candidates(top_companies, upper_ticker, seen)
+                peers.extend(
+                    await self._screen_by_market_cap(candidates, subject_market_cap, limit)
+                )
+
+        # Sector fallback — only below _SECTOR_FALLBACK_MIN_PEERS same-scale
+        # peers, and only when the subject exposes a sectorKey (D-07). Shares
+        # the `seen` set so an industry peer is never re-emitted.
+        if len(peers) < _SECTOR_FALLBACK_MIN_PEERS and sector_key:
+            try:
+                await increment_api_call_count()
+                top_companies = await asyncio.to_thread(
+                    self._fetch_sector_top_companies, sector_key
+                )
+            except Exception:
+                top_companies = None
+
+            if top_companies is not None and not getattr(top_companies, "empty", True):
+                candidates = self._extract_candidates(top_companies, upper_ticker, seen)
+                remaining = limit - len(peers)
+                peers.extend(
+                    await self._screen_by_market_cap(candidates, subject_market_cap, remaining)
+                )
+
+        return peers[:limit]
 
     async def get_metrics(self, tickers: list[str]) -> list[dict[str, Any]]:
         """Return per-peer comparison metrics for *tickers*.
