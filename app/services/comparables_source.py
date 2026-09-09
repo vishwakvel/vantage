@@ -6,8 +6,8 @@ metrics for those peers — using free-tier `yfinance` data.
 
 Peer-set construction (get_peers) works by reading the ticker's
 ``industryKey`` from ``Ticker(ticker).info`` and then looking up that
-industry's top constituent companies via ``yfinance.Industry(industry_key)
-.top_companies`` (a DataFrame indexed by ticker symbol, ranked by market
+industry's top constituent companies via the yfinance ``Industry``
+constituent list (a DataFrame indexed by ticker symbol, ranked by market
 weight within the industry). This is the closest thing yfinance exposes to
 a "peers" API — there is no dedicated peer-list field on ``Ticker.info``.
 When the industry key is absent, the lookup fails, or the industry has no
@@ -53,9 +53,28 @@ _TICKER_PATTERN: re.Pattern[str] = re.compile(r"^[A-Z0-9]{1,10}$")
 
 _DEFAULT_PEER_LIMIT: int = 5
 
+# Below this many same-scale peers from the industry path, get_peers falls back
+# to the subject's sectorKey top companies (D-07). At 3, a genuine 2-peer
+# industry result still triggers the sector sweep, while the mega-cap case
+# (industry bucket entirely micro-caps, proximity filter empties it) is rescued.
+_SECTOR_FALLBACK_MIN_PEERS: int = 3
+
+# A candidate is a same-scale peer only when its market cap lies between
+# floor*subject and ceiling*subject, inclusive (D-08). Worked example: at a
+# ~$3T subject (AAPL) this admits roughly $300B-$30T companies — the
+# MSFT/NVDA/AVGO band — and excludes the sub-$1B micro-caps (SONO, TBCH, AXIL,
+# BOXL) that dominate the narrow "consumer-electronics" industry bucket.
+_MARKET_CAP_RATIO_FLOOR: float = 0.1
+_MARKET_CAP_RATIO_CEILING: float = 10.0
+
+# Maximum number of candidates screened per source. Screening costs one
+# blocking Ticker(...).info fetch per candidate, so an unbounded pool would add
+# tens of seconds and tens of counted API calls to every research run.
+_CANDIDATE_SCREEN_LIMIT: int = 12
+
 
 class ComparablesSource:
-    """Peer-set + comparison-metrics client backed by yfinance.
+    """Peer-set + comparison-metrics client backed by yfinance data.
 
     Two async methods:
       get_peers   — construct a capped, validated peer-ticker list (D-05).
@@ -70,9 +89,11 @@ class ComparablesSource:
 
         Construction: read the ticker's ``industryKey`` from
         ``Ticker(ticker).info``, then look up that industry's top
-        constituent companies via ``yfinance.Industry(industry_key)
-        .top_companies``. If the industry key is missing or the lookup
-        fails/returns no data, returns ``[]`` — never fabricates peers.
+        constituent companies via the yfinance ``Industry`` constituent
+        list. Raw constituents are self-excluded, de-duplicated and
+        ticker-pattern validated by ``_extract_candidates``. If the
+        industry key is missing or the lookup fails/returns no data,
+        returns ``[]`` — never fabricates peers.
 
         Args:
             ticker: The subject ticker to find peers for.
@@ -112,19 +133,8 @@ class ComparablesSource:
 
         upper_ticker = ticker.upper()
         seen: set[str] = set()
-        peers: list[str] = []
-        for symbol in top_companies.index:
-            symbol_str = str(symbol).upper()
-            if symbol_str == upper_ticker or symbol_str in seen:
-                continue
-            if not _TICKER_PATTERN.match(symbol_str):
-                continue
-            seen.add(symbol_str)
-            peers.append(symbol_str)
-            if len(peers) >= limit:
-                break
-
-        return peers
+        candidates = self._extract_candidates(top_companies, upper_ticker, seen)
+        return candidates[:limit]
 
     async def get_metrics(self, tickers: list[str]) -> list[dict[str, Any]]:
         """Return per-peer comparison metrics for *tickers*.
@@ -178,6 +188,37 @@ class ComparablesSource:
     def _fetch_top_companies(industry_key: str) -> Any:
         """Blocking yfinance call — always invoke via asyncio.to_thread."""
         return yfinance.Industry(industry_key).top_companies
+
+    @staticmethod
+    def _fetch_sector_top_companies(sector_key: str) -> Any:
+        """Blocking yfinance call — always invoke via asyncio.to_thread."""
+        return yfinance.Sector(sector_key).top_companies
+
+    @staticmethod
+    def _extract_candidates(top_companies: Any, upper_ticker: str, seen: set[str]) -> list[str]:
+        """Validate raw industry/sector constituents into a candidate list.
+
+        Performs no I/O. Iterates ``top_companies.index``, upper-cases each
+        symbol, skips it when it equals *upper_ticker* or is already in
+        *seen*, skips it when it fails ``_TICKER_PATTERN``, otherwise adds
+        it to *seen* and appends it. Capped at ``_CANDIDATE_SCREEN_LIMIT``
+        rather than the caller's ``limit`` so market-cap screening has a
+        pool to work from. *seen* is mutated by design: the sector fallback
+        pass shares it so it can never re-emit a symbol the industry pass
+        already returned.
+        """
+        candidates: list[str] = []
+        for symbol in top_companies.index:
+            symbol_str = str(symbol).upper()
+            if symbol_str == upper_ticker or symbol_str in seen:
+                continue
+            if not _TICKER_PATTERN.match(symbol_str):
+                continue
+            seen.add(symbol_str)
+            candidates.append(symbol_str)
+            if len(candidates) >= _CANDIDATE_SCREEN_LIMIT:
+                break
+        return candidates
 
 
 # ---------------------------------------------------------------------------
