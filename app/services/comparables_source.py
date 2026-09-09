@@ -91,23 +91,31 @@ class ComparablesSource:
         ``Ticker(ticker).info``, then look up that industry's top
         constituent companies via the yfinance ``Industry`` constituent
         list. Raw constituents are self-excluded, de-duplicated and
-        ticker-pattern validated by ``_extract_candidates``. If the
-        industry key is missing or the lookup fails/returns no data,
-        returns ``[]`` — never fabricates peers.
+        ticker-pattern validated by ``_extract_candidates``, then screened
+        for market-cap proximity to the subject: a candidate outside
+        ``_MARKET_CAP_RATIO_FLOOR``x-``_MARKET_CAP_RATIO_CEILING``x the
+        subject's market cap is dropped (D-08). If the industry key is
+        missing or the lookup fails/returns no data, returns ``[]`` — never
+        fabricates peers. A subject whose info carries no ``marketCap``
+        skips proximity screening entirely.
 
         Args:
             ticker: The subject ticker to find peers for.
             limit:  Maximum number of peer tickers to return.
 
         Returns:
-            A de-duplicated, upper-cased, validated list of peer tickers,
-            capped at *limit*, excluding *ticker* itself. Empty on any
-            failure or when no peer data is available.
+            A de-duplicated, upper-cased, validated list of same-scale peer
+            tickers, capped at *limit*, excluding *ticker* itself. Empty on
+            any failure or when no peer data is available.
 
         Increments the external-API call counter (OBS-02) once per
-        underlying yfinance fetch it actually performs — up to two per
-        call, zero additional on the branch that returns early without an
-        industry key. Each increment no-ops outside a research run (D-05).
+        underlying yfinance fetch it actually performs: the subject info
+        fetch, plus the industry fetch, plus at most
+        ``_CANDIDATE_SCREEN_LIMIT`` candidate info fetches during proximity
+        screening (zero of those when the subject has no ``marketCap``).
+        The branch that returns early without an industry key performs just
+        the one subject fetch. Each increment no-ops outside a research run
+        (D-05).
         """
         try:
             await increment_api_call_count()
@@ -118,6 +126,7 @@ class ComparablesSource:
         if not info:
             return []
 
+        subject_market_cap = info.get("marketCap")
         industry_key = info.get("industryKey")
         if not industry_key:
             return []
@@ -134,7 +143,7 @@ class ComparablesSource:
         upper_ticker = ticker.upper()
         seen: set[str] = set()
         candidates = self._extract_candidates(top_companies, upper_ticker, seen)
-        return candidates[:limit]
+        return await self._screen_by_market_cap(candidates, subject_market_cap, limit)
 
     async def get_metrics(self, tickers: list[str]) -> list[dict[str, Any]]:
         """Return per-peer comparison metrics for *tickers*.
@@ -178,6 +187,56 @@ class ComparablesSource:
             )
 
         return results
+
+    async def _screen_by_market_cap(
+        self, candidates: list[str], subject_market_cap: Any, limit: int
+    ) -> list[str]:
+        """Keep only candidates within market-cap proximity of the subject.
+
+        A candidate is admitted only when its market cap lies within
+        ``[_MARKET_CAP_RATIO_FLOOR * subject, _MARKET_CAP_RATIO_CEILING *
+        subject]`` inclusive of both endpoints (D-08). This is the filter
+        that strips the micro-caps dominating a narrow industry bucket.
+
+        If *subject_market_cap* is falsy (absent from the subject's info,
+        or zero), returns ``candidates[:limit]`` unchanged and performs
+        zero fetches: with no subject scale there is nothing to be
+        proximate to, and emptying the list would be strictly worse than
+        today's behavior for the caller.
+
+        Otherwise each candidate costs one counted, exception-guarded
+        ``Ticker(...).info`` fetch. A candidate whose fetch raises, returns
+        no info, or carries a falsy ``marketCap`` is skipped — proximity
+        cannot be proven, so it is not admitted. Stops as soon as *limit*
+        candidates have been kept, so the common case costs roughly *limit*
+        fetches rather than ``_CANDIDATE_SCREEN_LIMIT``. Never raises.
+        """
+        if not subject_market_cap:
+            return candidates[:limit]
+
+        lower = _MARKET_CAP_RATIO_FLOOR * subject_market_cap
+        upper = _MARKET_CAP_RATIO_CEILING * subject_market_cap
+
+        kept: list[str] = []
+        for candidate in candidates:
+            try:
+                await increment_api_call_count()
+                info = await asyncio.to_thread(self._fetch_info, candidate)
+            except Exception:
+                continue
+
+            if not info:
+                continue
+            candidate_market_cap = info.get("marketCap")
+            if not candidate_market_cap:
+                continue
+
+            if lower <= candidate_market_cap <= upper:
+                kept.append(candidate)
+                if len(kept) >= limit:
+                    break
+
+        return kept
 
     @staticmethod
     def _fetch_info(ticker: str) -> dict[str, Any]:
