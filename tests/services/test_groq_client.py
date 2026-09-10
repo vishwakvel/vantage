@@ -7,7 +7,7 @@ Tests verify:
   - call_groq() performs a real (SDK-boundary-mocked) Groq chat-completion:
     it acquires the rate limiter before calling the SDK, returns a GroqResult
     carrying the completion text and usage, defaults to
-    llama-3.3-70b-versatile, and invokes the SDK with the expected
+    openai/gpt-oss-20b, and invokes the SDK with the expected
     messages/model/max_tokens.
   - GroqResult defensively extracts prompt/completion token counts from the
     response's usage field, defaulting to 0 when usage is None, and exposes
@@ -184,12 +184,16 @@ def _reset_client_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(groq_client_module, "_client", None, raising=False)
 
 
-def test_call_groq_default_model_is_llama_3_3_70b_versatile() -> None:
-    """call_groq's default model parameter is llama-3.3-70b-versatile."""
+def test_call_groq_default_model_is_gpt_oss_20b() -> None:
+    """call_groq's default model parameter is openai/gpt-oss-20b.
+
+    llama-3.3-70b-versatile was decommissioned by Groq on 2026-08-16
+    (Phase 13-06). openai/gpt-oss-20b is the current default.
+    """
     import inspect
 
     sig = inspect.signature(call_groq)
-    assert sig.parameters["model"].default == "llama-3.3-70b-versatile"
+    assert sig.parameters["model"].default == "openai/gpt-oss-20b"
 
 
 @pytest.mark.anyio
@@ -298,11 +302,11 @@ async def test_call_groq_invokes_sdk_with_expected_args(
     monkeypatch.setattr(groq_client_module, "get_settings", lambda: _FakeSettings())
     monkeypatch.setattr(groq_client_module, "AsyncGroq", lambda api_key: mock_client)
 
-    await call_groq("what is the ticker?", model="llama-3.3-70b-versatile", max_tokens=256)
+    await call_groq("what is the ticker?", model="openai/gpt-oss-20b", max_tokens=256)
 
     mock_client.chat.completions.create.assert_awaited_once_with(
         messages=[{"role": "user", "content": "what is the ticker?"}],
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-20b",
         max_tokens=256,
     )
 

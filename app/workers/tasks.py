@@ -15,12 +15,12 @@ deleted from that module in 06-05; this module is the new source of truth.
 
 Event-loop safety: each task invocation resets every module-level singleton
 that wraps a persistent async network client (DB engine, and the httpx-based
-EDGAR/news/arXiv/Groq clients) before its own ``asyncio.run(...)``, so none
-of them are reused from a prior (now-closed) task's event loop — reusing an
-asyncpg connection or httpx.AsyncClient bound to a closed loop raises
+EDGAR/news/arXiv/FRED/Groq clients) before its own ``asyncio.run(...)``, so
+none of them are reused from a prior (now-closed) task's event loop — reusing
+an asyncpg connection or httpx.AsyncClient bound to a closed loop raises
 "RuntimeError: Event loop is closed" (see
 ``app/db/session.py::reset_session_factory`` docstring, which the other
-four resets mirror exactly). The ambient plan-id scope (see
+five resets mirror exactly). The ambient plan-id scope (see
 ``_run_research_async``) is set inside the async body precisely so it
 cannot outlive this task's own context — it lives in the Task-local
 context copy ``asyncio.run`` creates, not in this module-level state.
@@ -50,6 +50,7 @@ from app.ingestion.section_constants import (
 from app.services.api_call_counter import read_and_clear_api_call_count, set_current_plan_id
 from app.services.arxiv_client import reset_arxiv_client
 from app.services.edgar_client import reset_edgar_client
+from app.services.fred_client import reset_fred_client
 from app.services.groq_client import reset_groq_client
 from app.services.news_client import reset_news_client
 from app.services.progress_publisher import publish_memo_terminal
@@ -262,13 +263,14 @@ def run_research_task(memo_id: str, plan_id: str, ticker: str, user_id: str) -> 
     """Celery entry point — synchronous wrapper around the async task body.
 
     Resets the DB engine/session-factory singleton AND every httpx-based
-    service client singleton (EDGAR, news, arXiv, Groq) before running its
-    own ``asyncio.run(...)``, so none of them reuse a connection bound to a
-    previous task's (now-closed) event loop.
+    service client singleton (EDGAR, news, arXiv, FRED, Groq) before running
+    its own ``asyncio.run(...)``, so none of them reuse a connection bound to
+    a previous task's (now-closed) event loop.
     """
     reset_session_factory()
     reset_edgar_client()
     reset_news_client()
     reset_arxiv_client()
+    reset_fred_client()
     reset_groq_client()
     asyncio.run(_run_research_async(memo_id, plan_id, ticker, user_id))

@@ -36,12 +36,11 @@ current run tree inside the function; either is a cosmetic gap only, since
 the authoritative source for OBS-02 and MEMO-06 regardless of what the
 LangSmith UI renders.
 
-Pitfall 6 caveat: the default model every ``call_groq`` call uses
-(``llama-3.3-70b-versatile``) carries a free-tier deprecation date of
-2026-08-16 (see ``app/agents/synthesis.py``'s own docstring). A failure here
-naming the model rather than a shape or count problem is a pre-existing,
-project-wide condition, not a regression introduced by this phase — model
-migration is out of this phase's scope.
+Pitfall 6 caveat: ``llama-3.3-70b-versatile`` was decommissioned by Groq on
+2026-08-16; Phase 13-06 swapped the ``call_groq`` default to
+``openai/gpt-oss-20b`` (see ``app/agents/synthesis.py``). A failure here
+naming the model rather than a shape or count problem points at a further
+Groq model change, not a regression in this test's subject.
 
 Invocation::
 
