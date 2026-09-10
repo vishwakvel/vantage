@@ -48,11 +48,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import atexit
+import contextlib
 import logging
 import os
 import pathlib
 import sys
 import traceback
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 # Standalone-script bootstrap: make ``app`` importable when this file is run
@@ -61,7 +63,13 @@ from datetime import UTC, datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select  # noqa: E402 - imports below must follow the bootstrap
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
+from app.core.config import get_settings  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
 from app.db.models import (  # noqa: E402
     AgentTask,
@@ -71,9 +79,32 @@ from app.db.models import (  # noqa: E402
     ResearchRequest,
     User,
 )
-from app.db.session import reset_session_factory, session_scope  # noqa: E402
 from app.services.company_service import ensure_company_exists  # noqa: E402
 from app.workers.tasks import run_research_task  # noqa: E402
+
+
+@contextlib.asynccontextmanager
+async def _script_session() -> AsyncIterator[AsyncSession]:
+    """Yield a session on a private engine that is disposed on exit.
+
+    The soak's own bookkeeping (seeding, per-run reporting, teardown) must NOT
+    go through ``app.db.session``'s module-level engine singleton: that
+    singleton is what ``run_research_task`` resets and rebuilds inside its own
+    ``asyncio.run`` loop, and sharing it would (a) crash with "attached to a
+    different loop" and (b) pollute the DEBT-03 signal with the script's own
+    multi-``asyncio.run`` engine churn. A private engine created and
+    ``dispose()``-d per call keeps the only thing touching the app singletons
+    the real ``run_research_task`` entrypoint — so any ``_TARGET_PHRASE``
+    occurrence is attributable to the code under test, not the harness.
+    """
+    engine = create_async_engine(get_settings().DATABASE_URL, pool_pre_ping=True)
+    try:
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()
+
 
 #: Four runs give three loop transitions. The defect never shows on the first
 #: run (there is no prior closed loop yet); D-16 calls for roughly 3-5.
@@ -113,6 +144,10 @@ class _PhraseCountingHandler(logging.Handler):
     def __init__(self) -> None:
         super().__init__(level=logging.DEBUG)
         self.hits: list[str] = []
+        #: Full formatted record (message + traceback) for every hit, so the
+        #: D-15 benign-or-not call can be made from the actual root cause
+        #: rather than a one-line summary.
+        self.details: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -123,6 +158,10 @@ class _PhraseCountingHandler(logging.Handler):
             first_line = formatted.splitlines()[0] if formatted else ""
             self.hits.append(
                 f"logging  logger={record.name} level={record.levelname} :: {first_line}"
+            )
+            self.details.append(
+                f"--- logging hit (logger={record.name} level={record.levelname}) ---\n"
+                f"{formatted}"
             )
 
 
@@ -151,9 +190,10 @@ def _install_unraisable_counter(sink: list[str]) -> None:
             )
         rendered = " ".join(rendered_parts)
         if _TARGET_PHRASE in rendered:
+            tb_text = rendered_parts[-1] if exc_value is not None else "(no traceback)"
             sink.append(
                 f"unraisable  {err_msg or type(exc_value).__name__} :: {exc_value!r} "
-                f"(object={obj!r})"
+                f"(object={obj!r})\n    --- traceback ---\n{tb_text}"
             )
         previous_hook(unraisable)
 
@@ -168,9 +208,14 @@ def _emit_verdict(handler: _PhraseCountingHandler, unraisable_hits: list[str]) -
     print(f"OCCURRENCES: {total}")
     for hit in all_hits:
         print(f"  - {hit}")
+    if handler.details:
+        print("\n  --- full logging-path tracebacks (D-15 root-cause evidence) ---")
+        for detail in handler.details:
+            print("\n".join(f"  {line}" for line in detail.splitlines()))
     print(
-        f"  cross-check on disk:  grep -c '{_TARGET_PHRASE}' <logfile>   "
-        "# must agree with OCCURRENCES above"
+        f"\n  cross-check on disk:  grep -c '{_TARGET_PHRASE}' <logfile>   "
+        "# note: this script's own verdict text repeats the phrase, so subtract "
+        "those lines"
     )
     _check(
         total == 0,
@@ -214,7 +259,7 @@ async def _seed_soak_fixtures(runs: int, ticker: str) -> tuple[str, str, list[st
     ``app/api/v1/research.py`` creates its memo. Returns the plan id, the user
     id, and the list of memo ids, all as ``str``.
     """
-    async with session_scope() as session:
+    async with _script_session() as session:
         result = await session.execute(select(User).where(User.email == _SOAK_EMAIL))
         user = result.scalar_one_or_none()
         if user is None:
@@ -267,7 +312,7 @@ async def _report_run(memo_id: str, plan_id: str, since: datetime) -> tuple[str,
     run's tasks are isolated by ``created_at >= since`` (the wall-clock instant
     captured just before the task was invoked).
     """
-    async with session_scope() as session:
+    async with _script_session() as session:
         memo = (
             await session.execute(select(ResearchMemo).where(ResearchMemo.id == memo_id))
         ).scalar_one()
@@ -293,7 +338,7 @@ async def _teardown_soak_fixtures(plan_id: str) -> None:
     The ``User`` and ``Company`` rows are left in place — they are harmless and
     make repeat runs cheap.
     """
-    async with session_scope() as session:
+    async with _script_session() as session:
         plan = (
             await session.execute(select(ResearchPlan).where(ResearchPlan.id == plan_id))
         ).scalar_one_or_none()
@@ -320,18 +365,17 @@ def run_soak(runs: int, ticker: str, keep: bool) -> None:
     rather than wrapping the whole loop in one long-lived loop — getting that
     wrong would itself raise a loop error and mask the real signal.
 
-    Every script-owned ``asyncio.run(...)`` below is preceded by
-    ``reset_session_factory()`` — exactly the discipline
-    ``app.workers.tasks.run_research_task`` follows before its own
-    ``asyncio.run``. Without it, the module-level engine rebuilt inside the
-    task's (now-closed) loop would be reused by the next script loop and raise
-    "attached to a different loop", which is the script's own bug, not DEBT-03.
+    Each script-owned ``asyncio.run(...)`` below runs its DB work through
+    ``_script_session()`` — a private per-call engine that is ``dispose()``-d
+    on exit — so the script never touches ``app.db.session``'s module singleton
+    that ``run_research_task`` resets. The only code exercising the app's
+    loop-bound client/engine singletons across loop generations is the real
+    ``run_research_task`` entrypoint, which is the point.
     """
     ticker = ticker.upper()
     print("\n=== DEBT-03 event-loop soak ===")
     print(f"  runs={runs}  ticker={ticker}  pid={os.getpid()}")
 
-    reset_session_factory()
     plan_id, user_id, memo_ids = asyncio.run(_seed_soak_fixtures(runs, ticker))
     print(f"  seeded: plan={plan_id}  user={user_id}  memos={len(memo_ids)}")
 
@@ -351,7 +395,6 @@ def run_soak(runs: int, ticker: str, keep: bool) -> None:
                 ticker=ticker,
                 user_id=user_id,
             )
-            reset_session_factory()
             memo_status, agent_statuses = asyncio.run(_report_run(memo_id, plan_id, run_started))
             print(f"  memo terminal status: {memo_status}")
             if agent_statuses:
@@ -361,7 +404,6 @@ def run_soak(runs: int, ticker: str, keep: bool) -> None:
                 print("    (no agent tasks recorded for this run)")
     finally:
         if not keep:
-            reset_session_factory()
             asyncio.run(_teardown_soak_fixtures(plan_id))
             print(
                 "\n  teardown complete: seeded plan/request/memos/agent-tasks "
