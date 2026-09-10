@@ -44,9 +44,10 @@ class FredClient:
     """Async HTTP client for the FRED economic-data API.
 
     Mirrors EDGARClient: one internal httpx.AsyncClient, a module-level
-    singleton below, and async context-manager support. Unlike EDGAR, FRED
-    requires an api_key query parameter rather than a header — the key is
-    sourced lazily via _api_key() at call time, never at import.
+    singleton below, its module-level reset_fred_client(), and async
+    context-manager support. Unlike EDGAR, FRED requires an api_key query
+    parameter rather than a header — the key is sourced lazily via
+    _api_key() at call time, never at import.
     """
 
     def __init__(self) -> None:
@@ -128,3 +129,31 @@ class FredClient:
 # ---------------------------------------------------------------------------
 
 fred_client = FredClient()
+
+
+def reset_fred_client() -> None:
+    """Replace fred_client's underlying httpx.AsyncClient with a fresh one.
+
+    Each Celery task invocation (``app.workers.tasks.run_research_task``)
+    runs the async research graph under its own fresh ``asyncio.run(...)``
+    event loop (same rationale as
+    ``app/db/session.py::reset_session_factory``). An httpx.AsyncClient
+    opened inside a prior task's now-closed event loop raises "RuntimeError:
+    Event loop is closed" if reused inside a new loop. The task calls this
+    before its own ``asyncio.run`` so the client is rebuilt bound to the
+    current loop.
+
+    Unlike ``reset_session_factory``, this client is constructed eagerly at
+    import time (not lazily), so there is no "drop the reference and let it
+    rebuild on next use" shortcut — the replacement client is constructed
+    here, directly.
+
+    The API key is deliberately untouched: FRED authenticates with a
+    per-request ``api_key`` query parameter sourced lazily in ``_api_key()``,
+    so — unlike EDGAR's header-bearing client — nothing key-related is held
+    on the client instance.
+    """
+    fred_client._client = httpx.AsyncClient(
+        timeout=30.0,
+        base_url=FRED_BASE_URL,
+    )
