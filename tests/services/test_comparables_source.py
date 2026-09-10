@@ -12,6 +12,18 @@ Coverage:
   - get_metrics: returns the 5 expected keys per peer.
   - get_metrics: skips a peer whose fake fetch raises, without aborting the
     batch.
+  - get_peers: a candidate outside ``_MARKET_CAP_RATIO_FLOOR``..``_CEILING``x
+    the subject's market cap is dropped; an in-band candidate is kept (D-08).
+  - get_peers: the sector fallback fires below ``_SECTOR_FALLBACK_MIN_PEERS``
+    same-scale industry peers, emits the industry peer first, and the shared
+    ``seen`` set stops a sector peer from duplicating it (D-07); the result is
+    capped at ``limit``.
+  - get_peers: a subject whose info has no ``marketCap`` skips market-cap
+    screening entirely (zero screening fetches).
+  - get_peers: an all-out-of-band candidate set still yields ``[]`` — the
+    D-10 no-comparables / PARTIAL contract is intact.
+  - get_peers: the OBS-02 call counter is incremented once per underlying
+    yfinance fetch across the industry pass, screening, and sector fallback.
 
 Mocks only at the yfinance boundary — ``app.services.comparables_source
 .yfinance.Ticker`` / ``.Industry`` — no live network calls (mirrors
@@ -24,6 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pandas as pd
 import pytest
 
+from app.services import comparables_source as _impl
 from app.services.comparables_source import ComparablesSource, comparables_source
 
 pytestmark = pytest.mark.anyio
@@ -276,9 +289,7 @@ async def test_get_peers_increments_once_per_fetch_actually_performed() -> None:
     assert mock_increment.await_count == 2
 
 
-async def test_get_peers_missing_industry_key_awards_only_the_info_fetch_increment() -> (
-    None
-):
+async def test_get_peers_missing_industry_key_awards_only_the_info_fetch_increment() -> None:
     """The branch that returns early without an industryKey performs
     exactly one increment (the info fetch) and never reaches — or counts —
     the second fetch."""
@@ -377,3 +388,245 @@ async def test_get_peers_and_get_metrics_return_values_unchanged_when_counter_ba
     assert peers == ["SONO", "TBCH"]
     assert len(metrics) == 1
     assert metrics[0]["ticker"] == "SONO"
+
+
+# ---------------------------------------------------------------------------
+# get_peers — market-cap proximity + sector fallback (DEBT-02)
+# ---------------------------------------------------------------------------
+#
+# Every test below patches ONLY at the yfinance boundary (Ticker / Industry /
+# Sector), per the module convention. ``_FakeTicker.info`` raises for any
+# unregistered symbol, so the subject AND every candidate the screening loop
+# visits is registered in the fake info map with an explicit ``marketCap``.
+# In-band / out-of-band magnitudes are derived from the imported ratio
+# constants so the tests survive a future retune of the band.
+
+_SUBJECT_MARKET_CAP: int = 3_000_000_000_000  # ~AAPL scale — the subject's own cap
+# Ratio 1.0 sits inside [FLOOR, CEILING] by construction (FLOOR < 1 < CEILING).
+_IN_BAND_MARKET_CAP: int = _SUBJECT_MARKET_CAP
+# Two orders of magnitude below the floor — unambiguously screened out.
+_OUT_OF_BAND_MARKET_CAP: int = int(_SUBJECT_MARKET_CAP * _impl._MARKET_CAP_RATIO_FLOOR / 100)
+
+
+async def test_get_peers_drops_peers_outside_the_market_cap_band() -> None:
+    """D-08 core fix: a candidate outside the market-cap band is dropped and
+    an in-band candidate is kept. The subject carries no ``sectorKey`` so the
+    sector fallback never enters the picture."""
+    source = ComparablesSource()
+
+    fake_info = {
+        "AAPL": {
+            "marketCap": _SUBJECT_MARKET_CAP,
+            "industryKey": "consumer-electronics",
+        },
+        "MSFT": {"marketCap": _IN_BAND_MARKET_CAP},
+        "TINYA": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+        "TINYB": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+    }
+    top_companies = pd.DataFrame(
+        index=["aapl", "msft", "tinya", "tinyb"],
+        data={"name": ["x"] * 4},
+    )
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Industry",
+            new=lambda key: MagicMock(top_companies=top_companies),
+        ),
+    ):
+        peers = await source.get_peers("AAPL")
+
+    assert peers == ["MSFT"]
+
+
+async def test_get_peers_falls_back_to_sector_when_industry_yields_too_few_same_scale_peers() -> (
+    None
+):
+    """D-07: the sector fallback fires when the industry pass returns fewer
+    than ``_SECTOR_FALLBACK_MIN_PEERS`` same-scale peers. The industry peer is
+    emitted first, the sector peers follow, the shared ``seen`` set stops the
+    sector pass from re-emitting the industry peer, and the result is capped
+    at ``limit``."""
+    source = ComparablesSource()
+
+    # Fixture is built so the industry pass yields exactly ONE same-scale peer,
+    # which is below _SECTOR_FALLBACK_MIN_PEERS (3) and triggers the fallback.
+    fake_info = {
+        "AAPL": {
+            "marketCap": _SUBJECT_MARKET_CAP,
+            "industryKey": "consumer-electronics",
+            "sectorKey": "technology",
+        },
+        "INDACORP": {"marketCap": _IN_BAND_MARKET_CAP},
+        "INDB": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+        "INDC": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+        "SECA": {"marketCap": _IN_BAND_MARKET_CAP},
+        "SECB": {"marketCap": _IN_BAND_MARKET_CAP},
+        "SECC": {"marketCap": _IN_BAND_MARKET_CAP},
+    }
+    industry_df = pd.DataFrame(
+        index=["aapl", "indacorp", "indb", "indc"],
+        data={"name": ["x"] * 4},
+    )
+    sector_df = pd.DataFrame(
+        index=["seca", "secb", "secc", "indacorp"],
+        data={"name": ["x"] * 4},
+    )
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Industry",
+            new=lambda key: MagicMock(top_companies=industry_df),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Sector",
+            new=lambda key: MagicMock(top_companies=sector_df),
+        ),
+    ):
+        peers = await source.get_peers("AAPL", limit=3)
+
+    assert peers[0] == "INDACORP"  # industry peer emitted before any sector peer
+    assert peers == ["INDACORP", "SECA", "SECB"]  # sector peers follow; capped at limit=3
+    assert len(peers) == len(set(peers))  # shared `seen` set dedups INDACORP across passes
+    assert len(peers) <= 3
+
+
+async def test_get_peers_subject_without_market_cap_skips_market_cap_screening() -> None:
+    """A subject whose info has no ``marketCap`` performs ZERO screening
+    fetches — ``_screen_by_market_cap`` returns ``candidates[:limit]`` before
+    touching yfinance. No candidate symbol is registered in the fake info
+    map, so any screening fetch would raise ``KeyError`` and silently drop
+    the candidate; the industry symbols coming back intact proves the
+    zero-fetch early return. This is also, by construction, why the twelve
+    pre-existing tests (subject fakes with no ``marketCap``) still exercise
+    today's behavior."""
+    source = ComparablesSource()
+
+    fake_info = {"AAPL": {"industryKey": "consumer-electronics"}}  # no marketCap
+    top_companies = pd.DataFrame(
+        index=["aapl", "peera", "peerb"],
+        data={"name": ["x"] * 3},
+    )
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Industry",
+            new=lambda key: MagicMock(top_companies=top_companies),
+        ),
+    ):
+        peers = await source.get_peers("AAPL")
+
+    assert peers == ["PEERA", "PEERB"]
+
+
+async def test_get_peers_returns_empty_when_no_candidate_is_same_scale() -> None:
+    """D-10 contract: when every industry candidate is out of band, get_peers
+    returns exactly ``[]`` and never raises. An empty peer list is a
+    legitimate "no comparables available" signal — ``app/agents/
+    comparable_companies.py`` turns it into PARTIAL with the ``no_peers``
+    reason. A stricter proximity filter emptying the list is correct
+    behavior, not a bug."""
+    source = ComparablesSource()
+
+    fake_info = {
+        "AAPL": {
+            "marketCap": _SUBJECT_MARKET_CAP,
+            "industryKey": "consumer-electronics",
+        },
+        "TINYA": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+        "TINYB": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+        "TINYC": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+    }
+    top_companies = pd.DataFrame(
+        index=["aapl", "tinya", "tinyb", "tinyc"],
+        data={"name": ["x"] * 4},
+    )
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Industry",
+            new=lambda key: MagicMock(top_companies=top_companies),
+        ),
+    ):
+        peers = await source.get_peers("AAPL")
+
+    assert peers == []
+
+
+async def test_get_peers_counts_every_screening_and_fallback_fetch() -> None:
+    """OBS-02 accounting: get_peers increments the API-call counter exactly
+    once per underlying yfinance fetch it performs — the subject info fetch,
+    the industry list fetch, one screening fetch per industry candidate
+    visited before the early break, the sector list fetch, and one screening
+    fetch per sector candidate visited. Driven by the same fixture as the
+    sector-fallback test so a future change to the screening early-break rule
+    fails loudly instead of drifting the count silently."""
+    source = ComparablesSource()
+
+    fake_info = {
+        "AAPL": {
+            "marketCap": _SUBJECT_MARKET_CAP,
+            "industryKey": "consumer-electronics",
+            "sectorKey": "technology",
+        },
+        "INDACORP": {"marketCap": _IN_BAND_MARKET_CAP},
+        "INDB": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+        "INDC": {"marketCap": _OUT_OF_BAND_MARKET_CAP},
+        "SECA": {"marketCap": _IN_BAND_MARKET_CAP},
+        "SECB": {"marketCap": _IN_BAND_MARKET_CAP},
+        "SECC": {"marketCap": _IN_BAND_MARKET_CAP},
+    }
+    industry_df = pd.DataFrame(
+        index=["aapl", "indacorp", "indb", "indc"],
+        data={"name": ["x"] * 4},
+    )
+    sector_df = pd.DataFrame(
+        index=["seca", "secb", "secc", "indacorp"],
+        data={"name": ["x"] * 4},
+    )
+
+    with (
+        patch(
+            "app.services.comparables_source.yfinance.Ticker",
+            new=_fake_ticker_factory(fake_info),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Industry",
+            new=lambda key: MagicMock(top_companies=industry_df),
+        ),
+        patch(
+            "app.services.comparables_source.yfinance.Sector",
+            new=lambda key: MagicMock(top_companies=sector_df),
+        ),
+        patch(
+            "app.services.comparables_source.increment_api_call_count",
+            new_callable=AsyncMock,
+        ) as mock_increment,
+    ):
+        peers = await source.get_peers("AAPL", limit=3)
+
+    expected = (
+        1  # subject info fetch
+        + 1  # industry top-companies fetch
+        + 3  # industry screening: INDACORP (kept) + INDB + INDC, all visited before limit
+        + 1  # sector top-companies fetch (industry gave < _SECTOR_FALLBACK_MIN_PEERS)
+        + 2  # sector screening: SECA + SECB kept, loop breaks at the remaining budget (limit - 1)
+    )
+    assert peers == ["INDACORP", "SECA", "SECB"]
+    assert mock_increment.await_count == expected
