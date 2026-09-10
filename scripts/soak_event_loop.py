@@ -1,5 +1,10 @@
 """DEBT-03 reproduction harness — the event-loop-closed soak (D-14 / D-16).
 
+``scripts/`` holds standalone verification-time scripts, not tests. Its sibling
+``scripts/smoke_alert_evaluation.py`` is the Phase 11 alert-evaluation smoke
+test; this file is the Phase 13 event-loop soak. Both need the real stack and
+are run by a human, never by CI.
+
 This proves that running N research tasks back-to-back inside ONE long-lived
 process does not leave a stray "Event loop is closed" traceback behind. Each
 Celery ``run_research`` task invocation resets every module-level async-client
