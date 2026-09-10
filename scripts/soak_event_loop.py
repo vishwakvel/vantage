@@ -71,7 +71,7 @@ from app.db.models import (  # noqa: E402
     ResearchRequest,
     User,
 )
-from app.db.session import session_scope  # noqa: E402
+from app.db.session import reset_session_factory, session_scope  # noqa: E402
 from app.services.company_service import ensure_company_exists  # noqa: E402
 from app.workers.tasks import run_research_task  # noqa: E402
 
@@ -319,11 +319,19 @@ def run_soak(runs: int, ticker: str, keep: bool) -> None:
     driven by their own ``asyncio.run(...)`` around the synchronous task call,
     rather than wrapping the whole loop in one long-lived loop — getting that
     wrong would itself raise a loop error and mask the real signal.
+
+    Every script-owned ``asyncio.run(...)`` below is preceded by
+    ``reset_session_factory()`` — exactly the discipline
+    ``app.workers.tasks.run_research_task`` follows before its own
+    ``asyncio.run``. Without it, the module-level engine rebuilt inside the
+    task's (now-closed) loop would be reused by the next script loop and raise
+    "attached to a different loop", which is the script's own bug, not DEBT-03.
     """
     ticker = ticker.upper()
     print("\n=== DEBT-03 event-loop soak ===")
     print(f"  runs={runs}  ticker={ticker}  pid={os.getpid()}")
 
+    reset_session_factory()
     plan_id, user_id, memo_ids = asyncio.run(_seed_soak_fixtures(runs, ticker))
     print(f"  seeded: plan={plan_id}  user={user_id}  memos={len(memo_ids)}")
 
@@ -343,6 +351,7 @@ def run_soak(runs: int, ticker: str, keep: bool) -> None:
                 ticker=ticker,
                 user_id=user_id,
             )
+            reset_session_factory()
             memo_status, agent_statuses = asyncio.run(_report_run(memo_id, plan_id, run_started))
             print(f"  memo terminal status: {memo_status}")
             if agent_statuses:
@@ -352,6 +361,7 @@ def run_soak(runs: int, ticker: str, keep: bool) -> None:
                 print("    (no agent tasks recorded for this run)")
     finally:
         if not keep:
+            reset_session_factory()
             asyncio.run(_teardown_soak_fixtures(plan_id))
             print(
                 "\n  teardown complete: seeded plan/request/memos/agent-tasks "
