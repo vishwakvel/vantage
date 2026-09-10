@@ -22,8 +22,16 @@ Prerequisites:
     - Alembic migrations must be at head (``alembic upgrade head``).
 
 Invocation:
-    .venv/bin/python scripts/soak_event_loop.py --runs 4 --ticker AAPL
-    .venv/bin/python scripts/soak_event_loop.py --keep      # skip teardown
+    # Redirect into a log file so the operator has a greppable artifact:
+    .venv/bin/python scripts/soak_event_loop.py --runs 4 --ticker AAPL \
+        > soak.log 2>&1
+    # Then confirm the on-disk count agrees with the printed "OCCURRENCES:" line:
+    grep -c 'Event loop is closed' soak.log
+    # Skip teardown to inspect the seeded rows afterwards:
+    .venv/bin/python scripts/soak_event_loop.py --keep > soak.log 2>&1
+
+The script prints a single ``OCCURRENCES: <n>`` verdict line and exits 1 when
+that count is greater than zero.
 
 This script is deliberately NOT collected by pytest (it lives outside
 ``tests/`` and defines no ``test_``-prefixed callable), NOT imported from any
@@ -34,9 +42,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
+import logging
 import os
 import pathlib
 import sys
+import traceback
 from datetime import UTC, datetime
 
 # Standalone-script bootstrap: make ``app`` importable when this file is run
@@ -70,9 +81,114 @@ _DEFAULT_TICKER: str = "AAPL"
 _SOAK_EMAIL = "soak-event-loop@vantage.invalid"
 _SOAK_PASSWORD = "soak-event-loop-password-not-a-real-secret"  # noqa: S105 - throwaway
 
+#: The exact ``RuntimeError`` text that every ``reset_*()`` docstring quotes
+#: (``app/services/{edgar,news,arxiv,fred,groq}_client.py``) and that
+#: ``app/db/session.py::reset_session_factory`` exists to prevent. asyncio's
+#: default exception handler renders a closed-loop error containing this
+#: string; ``httpx.AsyncClient.__del__`` firing after its loop closed does the
+#: same via ``sys.unraisablehook``. Match it character for character — a
+#: paraphrase silently detects nothing.
+_TARGET_PHRASE = "Event loop is closed"
+
 
 class SoakFailure(AssertionError):
     """Raised when a soak assertion fails — caught once at the top level."""
+
+
+class _PhraseCountingHandler(logging.Handler):
+    """Logging handler that counts formatted records containing ``_TARGET_PHRASE``.
+
+    asyncio reports closed-loop errors from its default exception handler
+    through ``logging.getLogger("asyncio")`` (call_exception_handler ->
+    ``logger.error(..., exc_info=...)``), so a logging handler catches every
+    run-phase occurrence — including the phrase as it appears inside the
+    formatted traceback text produced from ``exc_info``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.hits: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            formatted = self.format(record)
+        except Exception:  # noqa: BLE001 - a broken formatter must not abort the soak
+            return
+        if _TARGET_PHRASE in formatted:
+            first_line = formatted.splitlines()[0] if formatted else ""
+            self.hits.append(
+                f"logging  logger={record.name} level={record.levelname} :: {first_line}"
+            )
+
+
+def _install_unraisable_counter(sink: list[str]) -> None:
+    """Wrap ``sys.unraisablehook`` to count closed-loop teardown-phase errors.
+
+    This is the GC / interpreter-teardown path: an ``httpx.AsyncClient.__del__``
+    (or an asyncpg transport ``__del__``) firing after its event loop has
+    closed raises inside ``__del__``, which never reaches ``logging`` — the
+    interpreter routes it to ``sys.unraisablehook`` instead. These are exactly
+    the two stray tracebacks Phase 6 recorded on the backlog. The wrapper
+    always delegates to the previously installed hook, so nothing is swallowed.
+    """
+    previous_hook = sys.unraisablehook
+
+    def _counting_hook(unraisable: object) -> None:
+        exc_value = getattr(unraisable, "exc_value", None)
+        err_msg = getattr(unraisable, "err_msg", None)
+        obj = getattr(unraisable, "object", None)
+        rendered_parts = [str(err_msg or ""), repr(exc_value), repr(obj)]
+        if exc_value is not None:
+            rendered_parts.append(
+                "".join(
+                    traceback.format_exception(type(exc_value), exc_value, exc_value.__traceback__)
+                )
+            )
+        rendered = " ".join(rendered_parts)
+        if _TARGET_PHRASE in rendered:
+            sink.append(
+                f"unraisable  {err_msg or type(exc_value).__name__} :: {exc_value!r} "
+                f"(object={obj!r})"
+            )
+        previous_hook(unraisable)
+
+    sys.unraisablehook = _counting_hook
+
+
+def _emit_verdict(handler: _PhraseCountingHandler, unraisable_hits: list[str]) -> None:
+    """Print the greppable ``OCCURRENCES:`` verdict and fail on a non-zero count."""
+    all_hits = [*handler.hits, *unraisable_hits]
+    total = len(all_hits)
+    print("\n=== DEBT-03 verdict ===")
+    print(f"OCCURRENCES: {total}")
+    for hit in all_hits:
+        print(f"  - {hit}")
+    print(
+        f"  cross-check on disk:  grep -c '{_TARGET_PHRASE}' <logfile>   "
+        "# must agree with OCCURRENCES above"
+    )
+    _check(
+        total == 0,
+        (
+            f"zero '{_TARGET_PHRASE}' occurrences across the soak "
+            f"(logging + unraisable paths); got {total}. Per D-15 a residual "
+            "occurrence is acceptable ONLY if proven benign: cross-check each hit "
+            "above against the per-run memo terminal status and per-agent status "
+            "table printed earlier, confirm no agent result was affected, and "
+            "record the finding in 13-VERIFICATION.md."
+        ),
+    )
+
+
+def _atexit_summary(handler: _PhraseCountingHandler, unraisable_hits: list[str]) -> None:
+    """Flush a final count at interpreter shutdown.
+
+    Interpreter-teardown occurrences can fire AFTER ``main()`` returns. A hit
+    that appears in this line but NOT in the verdict block above is by
+    definition a teardown-phase occurrence — the exact D-15 category.
+    """
+    total = len(handler.hits) + len(unraisable_hits)
+    print(f"\n[atexit] final '{_TARGET_PHRASE}' occurrence count: {total}", file=sys.stderr)
 
 
 def _check(condition: bool, description: str) -> None:
@@ -262,10 +378,23 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # --- closed-loop traceback detection + pass/fail verdict: added in Task 2 ---
+    # Install closed-loop traceback detection BEFORE any soak work begins:
+    # a logging handler on the root and asyncio loggers catches run-phase
+    # occurrences; an sys.unraisablehook wrapper catches GC/teardown ones.
+    handler = _PhraseCountingHandler()
+    handler.setFormatter(logging.Formatter("%(name)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    asyncio_logger = logging.getLogger("asyncio")
+    asyncio_logger.addHandler(handler)
+    asyncio_logger.setLevel(logging.DEBUG)
+
+    unraisable_hits: list[str] = []
+    _install_unraisable_counter(unraisable_hits)
+    atexit.register(_atexit_summary, handler, unraisable_hits)
 
     try:
         run_soak(args.runs, args.ticker, args.keep)
+        _emit_verdict(handler, unraisable_hits)
     except SoakFailure as exc:
         print(f"\n=== FAIL ===\n{exc}", file=sys.stderr)
         sys.exit(1)
