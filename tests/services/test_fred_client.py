@@ -288,3 +288,40 @@ async def test_async_context_manager_closes_on_exit() -> None:
         pass
 
     client.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# reset_fred_client — event-loop safety across Celery task boundaries
+# ---------------------------------------------------------------------------
+
+
+def test_reset_fred_client_replaces_the_httpx_client() -> None:
+    """reset_fred_client() swaps fred_client's internal httpx.AsyncClient for
+    a fresh one, without replacing the fred_client singleton object.
+
+    Each Celery task runs the async research graph under its own fresh
+    asyncio.run(...) event loop (same rationale as
+    app/db/session.py::reset_session_factory). An httpx.AsyncClient opened
+    inside a prior task's now-closed event loop raises "RuntimeError: Event
+    loop is closed" if reused inside a new loop. This reset is synchronous so
+    Celery's sync entrypoint can call it before any loop exists.
+    """
+    import app.services.fred_client as mod
+
+    original_singleton_id = id(mod.fred_client)
+    original_client = mod.fred_client._client
+
+    mod.reset_fred_client()
+
+    assert (
+        id(mod.fred_client) == original_singleton_id
+    ), "reset_fred_client must not replace the module-level singleton object"
+    assert (
+        mod.fred_client._client is not original_client
+    ), "reset_fred_client must replace the underlying httpx.AsyncClient"
+    assert isinstance(
+        mod.fred_client._client, httpx.AsyncClient
+    ), "the replacement must itself be an httpx.AsyncClient"
+    assert (
+        str(mod.fred_client._client.base_url).rstrip("/") == FRED_BASE_URL
+    ), "the replacement client must be bound to FRED_BASE_URL"
