@@ -178,7 +178,7 @@ def _build_groq_result(text: str, usage: object | None) -> GroqResult:
 @traceable(run_type="llm", name="groq_chat_completion")
 async def call_groq(
     prompt: str,
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "openai/gpt-oss-20b",
     max_tokens: int = 1024,
 ) -> GroqResult:
     """Perform a real, rate-limited Groq chat-completion call.
@@ -204,7 +204,9 @@ async def call_groq(
 
     Args:
         prompt:     The prompt text to send to Groq.
-        model:      Groq model identifier (default: llama-3.3-70b-versatile).
+        model:      Groq model identifier (default: openai/gpt-oss-20b —
+                    llama-3.3-70b-versatile was decommissioned by Groq on
+                    2026-08-16; see Phase 13-06 SUMMARY).
         max_tokens: Token budget to reserve from the rate limiter and pass
                     to the Groq API as the completion's max_tokens.
 

@@ -54,10 +54,12 @@ from app.services.groq_client import call_groq
 
 logger = logging.getLogger(__name__)
 
-# NOTE (07-RESEARCH.md Pitfall 4): llama-3.3-70b-versatile is scheduled for
-# free/developer-tier deprecation on Groq on 2026-08-16 — every call_groq
-# invocation project-wide is at risk after that date. Not a Phase 7 blocker;
-# flagged here as a project-wide TODO for a future model-migration phase.
+# NOTE (07-RESEARCH.md Pitfall 4): llama-3.3-70b-versatile was decommissioned
+# by Groq on 2026-08-16 as predicted. Phase 13-06 swapped the project-wide
+# call_groq default to openai/gpt-oss-20b (the surviving Groq general-purpose
+# model that returns non-empty completions). A dedicated model-evaluation
+# phase should still weigh gpt-oss-20b vs gpt-oss-120b (reasoning tokens) vs
+# qwen3.x and tune agent prompts accordingly.
 
 # ---------------------------------------------------------------------------
 # Module constants
