@@ -20,6 +20,11 @@ arXiv and yfinance/comparables need no API key and always run once the
 module-level gate is open. NewsAPI and FRED additionally skip individually
 if their respective key is unset, so a partial key set still exercises what
 it can.
+
+``test_live_comparables_source_mega_cap_peers_are_large_caps`` is the DEBT-02
+acceptance bar (D-11): unlike its siblings it makes more than one real call
+(market-cap proximity screening is itself multi-fetch), so it runs noticeably
+slower than the rest of this file.
 """
 
 import os
@@ -28,7 +33,11 @@ import re
 import pytest
 
 from app.services.arxiv_client import arxiv_client
-from app.services.comparables_source import comparables_source
+from app.services.comparables_source import (
+    _MARKET_CAP_RATIO_CEILING,
+    _MARKET_CAP_RATIO_FLOOR,
+    comparables_source,
+)
 from app.services.fred_client import fred_client
 from app.services.news_client import news_client
 
@@ -45,6 +54,14 @@ pytestmark = [
 # pattern — used here only to assert the shape of what get_peers returns,
 # not to re-implement the client's validation.
 _TICKER_PATTERN = re.compile(r"^[A-Z0-9]{1,10}$")
+
+# Absolute large-cap floor for the live mega-cap peer check. The ratio band
+# alone is not sufficient: if live yfinance omits ``marketCap`` from the
+# subject's info, get_peers deliberately skips proximity screening and returns
+# the unfiltered micro-cap industry bucket — a purely ratio-relative assertion
+# would then pass vacuously. This absolute floor is what actually encodes
+# "recognizable large-cap competitor".
+_MEGA_CAP_PEER_FLOOR_USD = 100_000_000_000  # $100B
 
 
 async def test_live_news_client_get_recent_articles() -> None:
@@ -103,3 +120,50 @@ async def test_live_comparables_source_get_peers_and_metrics() -> None:
     assert isinstance(metrics, list)
     assert len(metrics) > 0
     assert "ticker" in metrics[0]
+
+
+async def test_live_comparables_source_mega_cap_peers_are_large_caps() -> None:
+    """DEBT-02 acceptance bar (D-11): AAPL and MSFT each return a non-empty
+    peer list of recognizable large-caps — not the micro-cap industry bucket
+    the pre-fix get_peers returned. Asserts an absolute large-cap floor AND
+    ratio proximity to the subject, the proximity constants imported straight
+    from the implementation so the check cannot drift.
+    """
+    for subject in ("AAPL", "MSFT"):
+        peers = await comparables_source.get_peers(subject)
+
+        assert isinstance(peers, list)
+        assert peers, (
+            f"DEBT-02: get_peers({subject!r}) returned no peers. An empty peer "
+            "list for a mega-cap is exactly the defect this phase closes."
+        )
+        assert all(_TICKER_PATTERN.match(p) for p in peers), peers
+
+        metrics = await comparables_source.get_metrics([subject, *peers])
+        cap_by_ticker = {m["ticker"]: m["market_cap"] for m in metrics}
+
+        subject_cap = cap_by_ticker.get(subject)
+        if not subject_cap:
+            pytest.skip(
+                f"yfinance returned no market_cap for {subject} — transient "
+                "upstream data gap, not a DEBT-02 regression."
+            )
+
+        for peer in peers:
+            peer_cap = cap_by_ticker.get(peer)
+            if not peer_cap:
+                continue
+            assert peer_cap >= _MEGA_CAP_PEER_FLOOR_USD, (
+                f"{subject} peer {peer} market cap {peer_cap:,} is below the "
+                f"$100B large-cap floor — not a recognizable {subject}-scale "
+                f"competitor (subject {subject} cap {subject_cap:,})."
+            )
+            assert (
+                _MARKET_CAP_RATIO_FLOOR * subject_cap
+                <= peer_cap
+                <= _MARKET_CAP_RATIO_CEILING * subject_cap
+            ), (
+                f"{subject} peer {peer} market cap {peer_cap:,} is outside "
+                f"{_MARKET_CAP_RATIO_FLOOR}x-{_MARKET_CAP_RATIO_CEILING}x the "
+                f"subject {subject} cap {subject_cap:,}."
+            )
