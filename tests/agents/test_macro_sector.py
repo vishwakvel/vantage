@@ -81,9 +81,7 @@ async def _seed_user(db_session: AsyncSession) -> User:
 
 
 async def _seed_plan(db_session: AsyncSession, owner: User) -> ResearchPlan:
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
@@ -149,9 +147,7 @@ async def test_status_success_all_series(db_session: AsyncSession) -> None:
         patch(
             "app.agents.macro_sector.call_groq",
             AsyncMock(
-                return_value=_make_groq_result(
-                    "A macro narrative contextualizing AAPL's sector."
-                )
+                return_value=_make_groq_result("A macro narrative contextualizing AAPL's sector.")
             ),
         ),
     ):
@@ -167,16 +163,12 @@ async def test_status_success_all_series(db_session: AsyncSession) -> None:
     assert citation_series_ids == set(MACRO_SERIES.values())
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.SUCCESS
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
@@ -219,11 +211,7 @@ async def test_status_partial_missing_series(db_session: AsyncSession) -> None:
         ),
         patch(
             "app.agents.macro_sector.call_groq",
-            AsyncMock(
-                return_value=_make_groq_result(
-                    "A macro narrative with partial coverage."
-                )
-            ),
+            AsyncMock(return_value=_make_groq_result("A macro narrative with partial coverage.")),
         ),
     ):
         result = await macro_sector_node(state)
@@ -232,16 +220,12 @@ async def test_status_partial_missing_series(db_session: AsyncSession) -> None:
     assert result["macro_output"] is not None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.PARTIAL
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert output_row.missing_fields == [_REASONS["partial_macro_data"]]
@@ -289,16 +273,12 @@ async def test_status_failed_zero_series(db_session: AsyncSession) -> None:
     mock_call_groq.assert_not_awaited()
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.missing_fields == [_REASONS["no_macro_data"]]
     # No Groq call ever happened on this path — NULL, not a fake zero.
@@ -340,16 +320,12 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     assert result["macro_output"] is None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.missing_fields == [_REASONS["llm_error"]]
     # A raising call_groq never completes — NULL, not a fake zero.
@@ -382,27 +358,33 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         patch(
             "app.agents.macro_sector.call_groq",
             AsyncMock(
-                return_value=_make_groq_result(
-                    "A macro narrative contextualizing AAPL's sector."
-                )
+                return_value=_make_groq_result("A macro narrative contextualizing AAPL's sector.")
             ),
         ),
     ):
         await macro_sector_node(state)
 
     task_rows = (
-        await db_session.execute(
-            select(AgentTask).where(
-                AgentTask.plan_id == plan.id,
-                AgentTask.agent_type == "MacroSector",
+        (
+            await db_session.execute(
+                select(AgentTask).where(
+                    AgentTask.plan_id == plan.id,
+                    AgentTask.agent_type == "MacroSector",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(task_rows) == 1
 
     output_rows = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+        (
+            await db_session.execute(
+                select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(output_rows) == 1

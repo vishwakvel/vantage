@@ -34,6 +34,7 @@ import pytest
 from app.services.groq_client import GroqResult
 from app.services.ticker_resolver import CandidateMatch, ResolutionResult, resolve
 
+
 #: Minimal GroqResult factory for mocking call_groq's new return contract —
 #: only ``text`` matters to ticker_resolver (it never persists token counts).
 def _groq_result(text: str) -> GroqResult:
@@ -43,6 +44,7 @@ def _groq_result(text: str) -> GroqResult:
         completion_tokens=5,
         usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
     )
+
 
 # ---------------------------------------------------------------------------
 # Fuzzy company-name match (D-01, D-02)
@@ -130,12 +132,8 @@ async def test_resolution_result_shape() -> None:
 @pytest.mark.anyio
 async def test_resolve_selected_tickers_fast_path() -> None:
     """selected_tickers bypasses fuzzy/LLM work — exact match, confidence 1.0."""
-    with patch(
-        "app.services.ticker_resolver.call_groq", new=AsyncMock()
-    ) as mock_call_groq:
-        results = await resolve(
-            "this text is ignored", session=None, selected_tickers=["AAPL"]
-        )
+    with patch("app.services.ticker_resolver.call_groq", new=AsyncMock()) as mock_call_groq:
+        results = await resolve("this text is ignored", session=None, selected_tickers=["AAPL"])
 
     mock_call_groq.assert_not_awaited()
     assert len(results) == 1
@@ -147,9 +145,7 @@ async def test_resolve_selected_tickers_fast_path() -> None:
 @pytest.mark.anyio
 async def test_resolve_selected_tickers_multiple() -> None:
     """Each selected ticker produces its own exact-match ResolutionResult."""
-    results = await resolve(
-        "ignored", session=None, selected_tickers=["AAPL", "MSFT"]
-    )
+    results = await resolve("ignored", session=None, selected_tickers=["AAPL", "MSFT"])
 
     assert len(results) == 2
     assert {r.ticker for r in results} == {"AAPL", "MSFT"}
@@ -189,9 +185,7 @@ async def test_resolve_llm_fallback_uses_self_reported_confidence() -> None:
     return produced."""
     with patch(
         "app.services.ticker_resolver.call_groq",
-        new=AsyncMock(
-            return_value=_groq_result('{"ticker": "AAPL", "confidence": 0.92}')
-        ),
+        new=AsyncMock(return_value=_groq_result('{"ticker": "AAPL", "confidence": 0.92}')),
     ) as mock_call_groq:
         results = await resolve(_INCONCLUSIVE_QUERY, session=None)
 

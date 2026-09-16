@@ -34,12 +34,8 @@ _NEW_SPECIALIST_KEYS = {
     "comparables_status",
 }
 
-_OUTPUT_KEYS = {
-    key for key in _NEW_SPECIALIST_KEYS if key.endswith("_output")
-}
-_STATUS_KEYS = {
-    key for key in _NEW_SPECIALIST_KEYS if key.endswith("_status")
-}
+_OUTPUT_KEYS = {key for key in _NEW_SPECIALIST_KEYS if key.endswith("_output")}
+_STATUS_KEYS = {key for key in _NEW_SPECIALIST_KEYS if key.endswith("_status")}
 
 
 def test_agent_graph_state_has_all_expected_keys() -> None:
@@ -63,9 +59,9 @@ def test_new_output_fields_permit_none() -> None:
     """Each new *_output key annotation permits None (dict | None)."""
     for key in _OUTPUT_KEYS:
         annotation = _RESOLVED_ANNOTATIONS[key]
-        assert type(None) in getattr(annotation, "__args__", ()), (
-            f"{key} annotation {annotation!r} must permit None"
-        )
+        assert type(None) in getattr(
+            annotation, "__args__", ()
+        ), f"{key} annotation {annotation!r} must permit None"
 
 
 def test_new_status_fields_are_str() -> None:

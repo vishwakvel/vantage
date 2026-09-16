@@ -140,9 +140,7 @@ async def _seed_user(db_session: AsyncSession) -> User:
 
 
 async def _seed_plan(db_session: AsyncSession, owner: User) -> ResearchPlan:
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
@@ -206,9 +204,7 @@ async def test_citations_have_canonical_id(db_session: AsyncSession) -> None:
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result()),
@@ -238,9 +234,7 @@ async def test_citations_have_quote(db_session: AsyncSession) -> None:
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result()),
@@ -270,9 +264,7 @@ async def test_status_success_all_sections(db_session: AsyncSession) -> None:
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result()),
@@ -283,16 +275,12 @@ async def test_status_success_all_sections(db_session: AsyncSession) -> None:
     assert result["fundamentals_status"] == AgentTaskStatus.SUCCESS.value
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.SUCCESS
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
@@ -314,9 +302,7 @@ async def test_status_partial_missing_section(db_session: AsyncSession) -> None:
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result()),
@@ -327,16 +313,12 @@ async def test_status_partial_missing_section(db_session: AsyncSession) -> None:
     assert result["fundamentals_status"] == AgentTaskStatus.PARTIAL.value
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.PARTIAL
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert set(output_row.missing_fields) == {SECTION_NOTES, SECTION_RISK_FACTORS}
@@ -367,16 +349,12 @@ async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
     mock_call_groq.assert_not_awaited()
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     # D-07: a human-readable reason sentence, never the raw section-name list
     # (that list is reserved for the PARTIAL missing-some-sections case).
@@ -398,9 +376,7 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(side_effect=RuntimeError("groq boom")),
@@ -412,16 +388,12 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     assert result["fundamentals_output"] is None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     # D-07: a distinct reason from the zero-chunks case — the previous bug
     # wrote the identical section-name list for every failure path,
@@ -447,9 +419,7 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result()),
@@ -458,20 +428,28 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         await fundamental_analysis_node(state)
 
     task_rows = (
-        await db_session.execute(
-            select(AgentTask).where(
-                AgentTask.plan_id == plan.id,
-                AgentTask.agent_type == "FundamentalAnalysis",
+        (
+            await db_session.execute(
+                select(AgentTask).where(
+                    AgentTask.plan_id == plan.id,
+                    AgentTask.agent_type == "FundamentalAnalysis",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(task_rows) == 1
 
     output_rows = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+        (
+            await db_session.execute(
+                select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(output_rows) == 1
 
 
@@ -513,9 +491,7 @@ async def test_anomalies_flow_through_to_output(db_session: AsyncSession) -> Non
     report = AnomalyReport(anomalies=[_SAMPLE_ANOMALY], skipped_metrics=[])
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result()),
@@ -535,14 +511,10 @@ async def test_anomalies_flow_through_to_output(db_session: AsyncSession) -> Non
     assert result["fundamentals_output"]["metrics_note"] is None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.output["anomalies"] == [_SAMPLE_ANOMALY]
     for key in ("metric_name", "period", "value", "severity", "description"):
@@ -568,9 +540,7 @@ async def test_skipped_metrics_sets_insufficient_history_note(
     report = AnomalyReport(anomalies=[], skipped_metrics=["debt_to_equity"])
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result(text="narrative")),
@@ -586,9 +556,7 @@ async def test_skipped_metrics_sets_insufficient_history_note(
     ):
         result = await fundamental_analysis_node(state)
 
-    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
-        "insufficient_history"
-    ]
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS["insufficient_history"]
     assert result["fundamentals_output"]["anomalies"] == []
 
 
@@ -609,14 +577,10 @@ async def test_skipped_metrics_coexist_with_anomalies(
     plan = await _seed_plan(db_session, user)
     chunks = _all_section_chunks()
     state = await _build_state(db_session, plan, user)
-    report = AnomalyReport(
-        anomalies=[_SAMPLE_ANOMALY], skipped_metrics=["debt_to_equity"]
-    )
+    report = AnomalyReport(anomalies=[_SAMPLE_ANOMALY], skipped_metrics=["debt_to_equity"])
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result(text="narrative")),
@@ -632,9 +596,7 @@ async def test_skipped_metrics_coexist_with_anomalies(
     ):
         result = await fundamental_analysis_node(state)
 
-    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
-        "insufficient_history"
-    ]
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS["insufficient_history"]
     assert result["fundamentals_output"]["anomalies"] == [_SAMPLE_ANOMALY]
 
 
@@ -658,9 +620,7 @@ async def test_metrics_persistence_failure_leaves_status_and_completeness_unchan
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result(text="narrative")),
@@ -674,21 +634,15 @@ async def test_metrics_persistence_failure_leaves_status_and_completeness_unchan
 
     assert result["fundamentals_status"] == AgentTaskStatus.SUCCESS.value
     assert result["fundamentals_output"]["anomalies"] == []
-    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
-        "metrics_unavailable"
-    ]
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS["metrics_unavailable"]
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.SUCCESS
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
 
@@ -711,9 +665,7 @@ async def test_anomaly_detection_failure_leaves_status_and_completeness_unchange
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result(text="narrative")),
@@ -731,21 +683,15 @@ async def test_anomaly_detection_failure_leaves_status_and_completeness_unchange
 
     assert result["fundamentals_status"] == AgentTaskStatus.SUCCESS.value
     assert result["fundamentals_output"]["anomalies"] == []
-    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
-        "metrics_unavailable"
-    ]
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS["metrics_unavailable"]
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.SUCCESS
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
 
@@ -769,9 +715,7 @@ async def test_empty_metrics_series_sets_metrics_unavailable_note(
     state = await _build_state(db_session, plan, user)
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result(text="narrative")),
@@ -780,16 +724,12 @@ async def test_empty_metrics_series_sets_metrics_unavailable_note(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
             AsyncMock(return_value={}),
         ),
-        patch(
-            "app.agents.fundamental_analysis.detect_anomalies"
-        ) as mock_detect,
+        patch("app.agents.fundamental_analysis.detect_anomalies") as mock_detect,
     ):
         result = await fundamental_analysis_node(state)
 
     assert result["fundamentals_output"]["anomalies"] == []
-    assert result["fundamentals_output"]["metrics_note"] == _REASONS[
-        "metrics_unavailable"
-    ]
+    assert result["fundamentals_output"]["metrics_note"] == _REASONS["metrics_unavailable"]
     mock_detect.assert_not_called()
 
 
@@ -814,14 +754,10 @@ async def test_zero_chunk_failed_path_has_anomalies_and_metrics_note_keys(
     assert result["fundamentals_output"] is None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.output["anomalies"] == []
     assert output_row.output["metrics_note"] is None
@@ -844,9 +780,7 @@ async def test_detect_anomalies_invoked_via_asyncio_to_thread(
     report = AnomalyReport(anomalies=[], skipped_metrics=[])
 
     with (
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             AsyncMock(return_value=_make_groq_result(text="narrative")),
@@ -855,9 +789,7 @@ async def test_detect_anomalies_invoked_via_asyncio_to_thread(
             "app.agents.fundamental_analysis.persist_quarterly_metrics",
             AsyncMock(return_value=_SAMPLE_SERIES),
         ),
-        patch(
-            "app.agents.fundamental_analysis.detect_anomalies"
-        ) as mock_detect,
+        patch("app.agents.fundamental_analysis.detect_anomalies") as mock_detect,
         patch(
             "app.agents.fundamental_analysis.asyncio.to_thread",
             AsyncMock(return_value=report),

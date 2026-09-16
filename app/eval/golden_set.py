@@ -205,9 +205,7 @@ def load_golden_set(path: Path | None = None) -> list[GoldenCase]:
         else:
             seen_case_ids[case_id] = index
     if duplicate_ids:
-        problems.append(
-            f"duplicate case_id value(s) found: {', '.join(sorted(duplicate_ids))}"
-        )
+        problems.append(f"duplicate case_id value(s) found: {', '.join(sorted(duplicate_ids))}")
 
     if not (MIN_CASES <= len(data) <= MAX_CASES):
         problems.append(

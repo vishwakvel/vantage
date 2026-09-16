@@ -143,11 +143,17 @@ async def test_get_latest_memo_for_plan_returns_newest(
     await db_session.commit()
 
     first = await _seed_memo(
-        db_session, plan, user, status=ResearchMemoStatus.PARTIAL,
+        db_session,
+        plan,
+        user,
+        status=ResearchMemoStatus.PARTIAL,
         body={"synthesis": {"narrative": "first"}},
     )
     second = await _seed_memo(
-        db_session, plan, user, status=ResearchMemoStatus.COMPLETE,
+        db_session,
+        plan,
+        user,
+        status=ResearchMemoStatus.COMPLETE,
         body={"synthesis": {"narrative": "second"}},
     )
     assert second.created_at >= first.created_at
@@ -201,9 +207,7 @@ async def test_get_latest_memo_for_plan_other_user_returns_404(
 
 
 @pytest.mark.anyio
-async def test_memo_routes_require_auth(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
+async def test_memo_routes_require_auth(db_session: AsyncSession, test_settings: Settings) -> None:
     """Both GET memo routes reject unauthenticated requests before any DB
     work (401/403)."""
     user = await _seed_user(db_session)

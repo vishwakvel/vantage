@@ -1,0 +1,68 @@
+# Fly.io deployment manifest for the self-hosted ChromaDB backing service.
+#
+# This is a separate Fly app from `vantage` (the main api/worker/beat app,
+# see the repo-root fly.toml from plan 14-03) because it runs a stock
+# third-party image rather than this project's Dockerfile — Fly process
+# groups all share one image, and mixing images across process groups is not
+# supported, so a fourth process group is not an option here (D-02, 14-RESEARCH.md
+# "Open Question 4").
+#
+# Region note: a Fly volume is region-pinned block storage, not network
+# storage. primary_region here MUST match the main `vantage` app's
+# primary_region (iad) — a machine rescheduled into a different region than
+# its volume comes up with no volume attached (14-RESEARCH.md Pitfall 1).
+app            = "vantage-chroma"
+primary_region = "iad"
+
+[build]
+  # Pinned exact tag, not a floating/latest tag. This MUST stay equal to the
+  # `chromadb==0.5.23` client pin in requirements/base.txt — a client/server
+  # version skew produces confusing runtime errors rather than a clean
+  # failure. No `dockerfile` key: this app runs a stock image.
+  image = "chromadb/chroma:0.5.23"
+
+[env]
+  # All three set explicitly rather than trusting image defaults, which have
+  # differed across Chroma releases (14-RESEARCH.md Pitfall 1).
+  IS_PERSISTENT        = "TRUE"
+  PERSIST_DIRECTORY    = "/chroma/chroma"
+  ANONYMIZED_TELEMETRY = "FALSE"
+
+# The mount destination below and PERSIST_DIRECTORY above MUST be the same
+# string. Why: the pinned 0.5.x image persists to that directory by default
+# (chromadb/config.py); if the volume is mounted anywhere else, every write
+# lands on the machine's ephemeral root filesystem, the heartbeat check below
+# stays green, retrieval keeps working, and then all ingested documents
+# vanish on the next machine restart with no error anywhere. That is the
+# exact silent failure recorded as a Phase 14 blocker in .planning/STATE.md,
+# and it is why plan 14-10 requires a live restart-and-requery rather than a
+# config review. One volume, one source name — a duplicate source name means
+# a rescheduled machine could attach an empty volume instead of this one.
+[[mounts]]
+  source       = "chroma_data"
+  destination  = "/chroma/chroma"
+  initial_size = "3gb"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "512mb"
+
+# NO [http_service] and no published port — this is a private-network-only
+# service (OWASP A05). Chroma is a vector store holding user-derived
+# embeddings; the only thing that may reach it is the main app, over Fly's
+# private network at vantage-chroma.flycast:8000. The check below is a
+# top-level (non-proxy) check: it is observational only and does not control
+# routing, which is correct for an internal service with no [http_service].
+[checks]
+  [checks.heartbeat]
+    type         = "http"
+    port         = 8000
+    method       = "get"
+    # Byte-identical to the `chromadb` healthcheck path in docker-compose.yml.
+    # This is the 0.5.x heartbeat path — the 1.x images moved the heartbeat
+    # under a different API version prefix, and using that newer path against
+    # this pinned image produces a permanently-failing check.
+    path         = "/api/v1/heartbeat"
+    interval     = "30s"
+    timeout      = "5s"
+    grace_period = "30s"

@@ -83,9 +83,7 @@ async def _seed_user(db_session: AsyncSession) -> User:
 
 
 async def _seed_plan(db_session: AsyncSession, owner: User) -> ResearchPlan:
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
@@ -161,11 +159,7 @@ async def test_status_success_all_peer_metrics(db_session: AsyncSession) -> None
         ),
         patch(
             "app.agents.comparable_companies.call_groq",
-            AsyncMock(
-                return_value=_make_groq_result(
-                    "AAPL trades at a premium to its peers."
-                )
-            ),
+            AsyncMock(return_value=_make_groq_result("AAPL trades at a premium to its peers.")),
         ),
     ):
         result = await comparable_companies_node(state)
@@ -178,16 +172,12 @@ async def test_status_success_all_peer_metrics(db_session: AsyncSession) -> None
     assert {c["ticker"] for c in output["citations"]} == set(peers)
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.SUCCESS
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
@@ -226,9 +216,7 @@ async def test_status_partial_missing_some_metrics(db_session: AsyncSession) -> 
         ),
         patch(
             "app.agents.comparable_companies.call_groq",
-            AsyncMock(
-                return_value=_make_groq_result("AAPL trades at a premium to MSFT.")
-            ),
+            AsyncMock(return_value=_make_groq_result("AAPL trades at a premium to MSFT.")),
         ),
     ):
         result = await comparable_companies_node(state)
@@ -236,16 +224,12 @@ async def test_status_partial_missing_some_metrics(db_session: AsyncSession) -> 
     assert result["comparables_status"] == AgentTaskStatus.PARTIAL.value
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.PARTIAL
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert output_row.missing_fields
@@ -295,16 +279,12 @@ async def test_status_failed_empty_peers(db_session: AsyncSession) -> None:
     mock_call_groq.assert_not_awaited()
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert "no peer set could be constructed for AAPL" in output_row.missing_fields
@@ -353,18 +333,17 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     assert result["comparables_output"] is None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
-    assert output_row.missing_fields == "Comparable-companies analysis unavailable — analysis engine error"
+    assert (
+        output_row.missing_fields
+        == "Comparable-companies analysis unavailable — analysis engine error"
+    )
     # A raising call_groq never completes — NULL, not a fake zero.
     assert output_row.prompt_tokens is None
     assert output_row.completion_tokens is None
@@ -400,28 +379,32 @@ async def test_one_agenttask_and_one_agentoutput_persisted(db_session: AsyncSess
         ),
         patch(
             "app.agents.comparable_companies.call_groq",
-            AsyncMock(
-                return_value=_make_groq_result(
-                    "AAPL trades at a premium to its peers."
-                )
-            ),
+            AsyncMock(return_value=_make_groq_result("AAPL trades at a premium to its peers.")),
         ),
     ):
         await comparable_companies_node(state)
 
     task_rows = (
-        await db_session.execute(
-            select(AgentTask).where(
-                AgentTask.plan_id == plan.id,
-                AgentTask.agent_type == "ComparableCompanies",
+        (
+            await db_session.execute(
+                select(AgentTask).where(
+                    AgentTask.plan_id == plan.id,
+                    AgentTask.agent_type == "ComparableCompanies",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(task_rows) == 1
 
     output_rows = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+        (
+            await db_session.execute(
+                select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(output_rows) == 1

@@ -73,12 +73,9 @@ _REASONS: dict[str, str] = {
         "constructed for {ticker}"
     ),
     "partial_metrics": (
-        "Comparable-companies analysis partial — metrics unavailable for "
-        "some peers"
+        "Comparable-companies analysis partial — metrics unavailable for " "some peers"
     ),
-    "llm_error": (
-        "Comparable-companies analysis unavailable — analysis engine error"
-    ),
+    "llm_error": ("Comparable-companies analysis unavailable — analysis engine error"),
 }
 
 
@@ -185,9 +182,7 @@ async def comparable_companies_node(state: dict[str, Any]) -> dict[str, Any]:
             metrics = await comparables_source.get_metrics(peers)
             citations = [_build_citation(metric) for metric in metrics]
 
-            groq_result = await call_groq(
-                _build_prompt(ticker, metrics), max_tokens=_MAX_TOKENS
-            )
+            groq_result = await call_groq(_build_prompt(ticker, metrics), max_tokens=_MAX_TOKENS)
             narrative = groq_result.text
             output = {
                 "narrative": narrative,

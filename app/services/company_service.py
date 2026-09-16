@@ -45,8 +45,6 @@ async def ensure_company_exists(ticker: str, session: AsyncSession) -> None:
     NOTHING`` so concurrent writers for the same new ticker don't race.
     """
     stmt = (
-        pg_insert(Company)
-        .values(ticker=ticker)
-        .on_conflict_do_nothing(index_elements=["ticker"])
+        pg_insert(Company).values(ticker=ticker).on_conflict_do_nothing(index_elements=["ticker"])
     )
     await session.execute(stmt)

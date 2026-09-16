@@ -114,10 +114,7 @@ async def test_live_call_groq_emits_langsmith_trace_with_token_counts(monkeypatc
     # real numbers, not a second mock — pin it to them directly.
     assert result.usage_metadata["input_tokens"] == result.prompt_tokens
     assert result.usage_metadata["output_tokens"] == result.completion_tokens
-    assert (
-        result.usage_metadata["total_tokens"]
-        == result.prompt_tokens + result.completion_tokens
-    )
+    assert result.usage_metadata["total_tokens"] == result.prompt_tokens + result.completion_tokens
 
     # Traced runs are shipped in the background. Read the installed
     # langsmith distribution's own documented drain/flush path rather than

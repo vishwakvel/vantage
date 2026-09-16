@@ -48,14 +48,10 @@ class TestPublishNotification:
         mock_redis = AsyncMock()
         settings = _make_settings()
 
-        with patch(
-            "app.services.notification_publisher._redis", return_value=mock_redis
-        ):
+        with patch("app.services.notification_publisher._redis", return_value=mock_redis):
             await publish_notification(
                 "u1",
-                notification_payload(
-                    "e1", "r1", "AAPL dropped 6.2%", "2026-07-28T10:00:00+00:00"
-                ),
+                notification_payload("e1", "r1", "AAPL dropped 6.2%", "2026-07-28T10:00:00+00:00"),
                 settings=settings,
             )
 
@@ -82,9 +78,7 @@ class TestPublishNotification:
         mock_redis.publish.return_value = 0
         settings = _make_settings()
 
-        with patch(
-            "app.services.notification_publisher._redis", return_value=mock_redis
-        ):
+        with patch("app.services.notification_publisher._redis", return_value=mock_redis):
             await publish_notification(
                 "u1",
                 notification_payload("e1", "r1", "m", "t"),
@@ -103,9 +97,7 @@ class TestPublishNotification:
         mock_redis = AsyncMock()
         settings = _make_settings()
 
-        with patch(
-            "app.services.notification_publisher._redis", return_value=mock_redis
-        ):
+        with patch("app.services.notification_publisher._redis", return_value=mock_redis):
             await publish_notification(
                 "u1",
                 notification_payload("e1", "r1", "m", "t"),
@@ -125,9 +117,7 @@ class TestPublishNotification:
         mock_redis.publish.side_effect = RuntimeError("boom")
         settings = _make_settings()
 
-        with patch(
-            "app.services.notification_publisher._redis", return_value=mock_redis
-        ):
+        with patch("app.services.notification_publisher._redis", return_value=mock_redis):
             with pytest.raises(RuntimeError):
                 await publish_notification(
                     "u1",

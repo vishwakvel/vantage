@@ -50,9 +50,7 @@ class NewsAPIClient:
         """Return NEWS_API_KEY from the environment, read at call time."""
         return os.environ.get("NEWS_API_KEY", "")
 
-    async def get_recent_articles(
-        self, query: str, *, page_size: int = 20
-    ) -> list[dict[str, Any]]:
+    async def get_recent_articles(self, query: str, *, page_size: int = 20) -> list[dict[str, Any]]:
         """Fetch recent news articles for *query* and normalize the results.
 
         Raises:

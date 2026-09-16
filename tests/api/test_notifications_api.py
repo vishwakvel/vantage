@@ -52,7 +52,7 @@ built-in skip behavior.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
@@ -80,9 +80,7 @@ def _history_url(entry_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_entry(
-    db_session: AsyncSession, user: User, ticker: str = "AAPL"
-) -> WatchlistEntry:
+async def _seed_entry(db_session: AsyncSession, user: User, ticker: str = "AAPL") -> WatchlistEntry:
     """Persist a Company + WatchlistEntry for *user* watching *ticker*."""
     await _seed_company(db_session, ticker=ticker)
     entry = WatchlistEntry(user_id=user.id, ticker=ticker)
@@ -133,7 +131,7 @@ async def _seed_event(
     return event
 
 
-_BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +194,7 @@ class TestListNotifications:
         rule = await _seed_rule(db_session, entry)
         await db_session.commit()
 
-        middle = await _seed_event(
-            db_session, rule.id, "middle", _BASE_TIME + timedelta(minutes=5)
-        )
+        middle = await _seed_event(db_session, rule.id, "middle", _BASE_TIME + timedelta(minutes=5))
         oldest = await _seed_event(db_session, rule.id, "oldest", _BASE_TIME)
         newest = await _seed_event(
             db_session, rule.id, "newest", _BASE_TIME + timedelta(minutes=10)
@@ -213,9 +209,7 @@ class TestListNotifications:
         assert ids == [str(newest.id), str(middle.id), str(oldest.id)]
 
     @pytest.mark.anyio
-    async def test_capped_at_50(
-        self, db_session: AsyncSession, test_settings: Settings
-    ) -> None:
+    async def test_capped_at_50(self, db_session: AsyncSession, test_settings: Settings) -> None:
         """55 events seeded; exactly 50 are returned and the oldest 5 are absent."""
         user = await _seed_user(db_session)
         entry = await _seed_entry(db_session, user)
@@ -223,9 +217,7 @@ class TestListNotifications:
         await db_session.commit()
 
         events = [
-            await _seed_event(
-                db_session, rule.id, f"event-{i}", _BASE_TIME + timedelta(seconds=i)
-            )
+            await _seed_event(db_session, rule.id, f"event-{i}", _BASE_TIME + timedelta(seconds=i))
             for i in range(55)
         ]
         await db_session.commit()
@@ -324,9 +316,7 @@ class TestListNotifications:
         assert str(event.id) in ids
 
     @pytest.mark.anyio
-    async def test_requires_auth(
-        self, db_session: AsyncSession, test_settings: Settings
-    ) -> None:
+    async def test_requires_auth(self, db_session: AsyncSession, test_settings: Settings) -> None:
         """An unauthenticated GET /notifications returns 401/403."""
         async with _make_unauthed_client(db_session, test_settings) as client:
             resp = await client.get(NOTIFICATIONS_URL)
@@ -425,9 +415,7 @@ class TestMarkRead:
         assert resp.status_code == 200, resp.text
 
         result = await db_session.execute(
-            select(AlertEvent).where(
-                AlertEvent.id.in_([other_event_1.id, other_event_2.id])
-            )
+            select(AlertEvent).where(AlertEvent.id.in_([other_event_1.id, other_event_2.id]))
         )
         other_users_rows = result.scalars().all()
         assert len(other_users_rows) == 2
@@ -456,9 +444,7 @@ class TestMarkRead:
         assert resp.json() == {"marked": 1}
 
     @pytest.mark.anyio
-    async def test_requires_auth(
-        self, db_session: AsyncSession, test_settings: Settings
-    ) -> None:
+    async def test_requires_auth(self, db_session: AsyncSession, test_settings: Settings) -> None:
         """An unauthenticated POST /notifications/mark-read returns 401/403."""
         async with _make_unauthed_client(db_session, test_settings) as client:
             resp = await client.post(MARK_READ_URL)
@@ -542,9 +528,7 @@ class TestAlertHistory:
         disabled_rule = await _seed_rule(db_session, entry, enabled=False)
         await db_session.commit()
 
-        enabled_event = await _seed_event(
-            db_session, enabled_rule.id, "from-enabled", _BASE_TIME
-        )
+        enabled_event = await _seed_event(db_session, enabled_rule.id, "from-enabled", _BASE_TIME)
         disabled_event = await _seed_event(
             db_session, disabled_rule.id, "from-disabled", _BASE_TIME + timedelta(seconds=1)
         )
@@ -648,9 +632,7 @@ class TestAlertHistory:
         assert resp.json()["events"] == []
 
     @pytest.mark.anyio
-    async def test_requires_auth(
-        self, db_session: AsyncSession, test_settings: Settings
-    ) -> None:
+    async def test_requires_auth(self, db_session: AsyncSession, test_settings: Settings) -> None:
         """An unauthenticated GET /notifications/history/{entry_id} returns 401/403."""
         user = await _seed_user(db_session)
         entry = await _seed_entry(db_session, user)

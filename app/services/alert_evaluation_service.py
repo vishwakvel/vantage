@@ -46,7 +46,7 @@ by an AST import audit in this plan's acceptance criteria (T-11-03-QUOTA).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import inspect as sa_inspect
@@ -88,9 +88,7 @@ CADENCE_INTERVALS: dict[str, timedelta] = {
 EFTS_LOOKBACK_DAYS: int = 90
 
 
-async def evaluate_all_rules(
-    session: "AsyncSession", settings: "Settings | None" = None
-) -> int:
+async def evaluate_all_rules(session: AsyncSession, settings: Settings | None = None) -> int:
     """Evaluate every enabled ``AlertRule`` in one pass and return fired count.
 
     Issues exactly one query (no per-rule lookup), dispatches each row to
@@ -110,7 +108,7 @@ async def evaluate_all_rules(
     Returns:
         The number of rules that fired a notification this tick.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     result = await session.execute(
         select(AlertRule, WatchlistEntry.ticker, WatchlistEntry.user_id)
@@ -166,9 +164,7 @@ async def evaluate_all_rules(
 
             event: AlertEvent | None = None
             if message is not None:
-                event = AlertEvent(
-                    alert_rule_id=rule.id, message=message, triggered_at=now
-                )
+                event = AlertEvent(alert_rule_id=rule.id, message=message, triggered_at=now)
                 session.add(event)
                 await session.flush()
 
@@ -204,9 +200,7 @@ async def evaluate_all_rules(
     return fired
 
 
-def _evaluate_scheduled(
-    rule: AlertRule, ticker: str, now: datetime
-) -> str | None:
+def _evaluate_scheduled(rule: AlertRule, ticker: str, now: datetime) -> str | None:
     """Evaluate a SCHEDULED rule (D-01, D-05).
 
     Fires a check-in reminder once its cadence interval has elapsed since
@@ -223,7 +217,7 @@ def _evaluate_scheduled(
     else:
         reference = rule.created_at
     if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=timezone.utc)
+        reference = reference.replace(tzinfo=UTC)
 
     if now - reference >= interval:
         rule.state = {
@@ -253,7 +247,7 @@ async def _newest_filing_hit(ticker: str) -> dict | None:
     correctly as plain text), falling back to ``_source["period_ending"]``
     when ``file_date`` is absent on every hit.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     startdt = (now - timedelta(days=EFTS_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     enddt = now.strftime("%Y-%m-%d")
 
@@ -281,9 +275,7 @@ async def _newest_filing_hit(ticker: str) -> dict | None:
     return max(hits, key=_sort_key)
 
 
-async def _evaluate_new_filing(
-    rule: AlertRule, ticker: str, now: datetime
-) -> str | None:
+async def _evaluate_new_filing(rule: AlertRule, ticker: str, now: datetime) -> str | None:
     """Evaluate a NEW_FILING rule (D-02).
 
     Seeds the cursor silently on first evaluation; fires exactly once per
@@ -323,20 +315,14 @@ async def _evaluate_new_filing(
             "last_seen_accession": accession,
             "last_checked_at": now.isoformat(),
         }
-        form_label = (
-            source.get("form")
-            or (source.get("root_forms") or [None])[0]
-            or "filing"
-        )
+        form_label = source.get("form") or (source.get("root_forms") or [None])[0] or "filing"
         return f"New {form_label} filed for {ticker}"
 
     rule.state = {**(rule.state or {}), "last_checked_at": now.isoformat()}
     return None
 
 
-async def _evaluate_price_move(
-    rule: AlertRule, ticker: str, now: datetime
-) -> str | None:
+async def _evaluate_price_move(rule: AlertRule, ticker: str, now: datetime) -> str | None:
     """Evaluate a PRICE_MOVE rule (D-05, implementing Phase 10 D-10).
 
     The reference price rolls forward on every tick whether or not the
@@ -355,7 +341,7 @@ async def _evaluate_price_move(
 
     state = rule.state or {}
     last_price = state.get("last_price")
-    if not isinstance(last_price, (int, float)) or last_price <= 0:
+    if not isinstance(last_price, int | float) or last_price <= 0:
         # First evaluation (or a corrupted/absent baseline) seeds the
         # reference price — mirrors D-02's seeding rule for NEW_FILING.
         rule.state = {

@@ -18,9 +18,7 @@ async def test_wrapped_node_emits_running_then_terminal_status() -> None:
 
     fake_node = AsyncMock(return_value={"fundamentals_status": "PARTIAL"})
 
-    with patch(
-        "app.graph.research_graph.publish_agent_status", new=AsyncMock()
-    ) as mock_publish:
+    with patch("app.graph.research_graph.publish_agent_status", new=AsyncMock()) as mock_publish:
         wrapped = _with_progress(fake_node, "FundamentalAnalysis", "fundamentals_status")
         result = await wrapped({"memo_id": "m1"})
 
@@ -46,9 +44,7 @@ async def test_wrapped_node_without_memo_id_no_ops() -> None:
 
     fake_node = AsyncMock(return_value={"fundamentals_status": "SUCCESS"})
 
-    with patch(
-        "app.graph.research_graph.publish_agent_status", new=AsyncMock()
-    ) as mock_publish:
+    with patch("app.graph.research_graph.publish_agent_status", new=AsyncMock()) as mock_publish:
         wrapped = _with_progress(fake_node, "FundamentalAnalysis", "fundamentals_status")
         result = await wrapped({})
 

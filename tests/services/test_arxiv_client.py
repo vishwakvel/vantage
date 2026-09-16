@@ -245,11 +245,11 @@ def test_reset_arxiv_client_replaces_the_httpx_client() -> None:
 
     mod.reset_arxiv_client()
 
-    assert id(mod.arxiv_client) == original_singleton_id, (
-        "reset_arxiv_client must not replace the module-level singleton object"
-    )
-    assert mod.arxiv_client._client is not original_client, (
-        "reset_arxiv_client must replace the underlying httpx.AsyncClient"
-    )
+    assert (
+        id(mod.arxiv_client) == original_singleton_id
+    ), "reset_arxiv_client must not replace the module-level singleton object"
+    assert (
+        mod.arxiv_client._client is not original_client
+    ), "reset_arxiv_client must replace the underlying httpx.AsyncClient"
     assert isinstance(mod.arxiv_client._client, httpx.AsyncClient)
     assert str(mod.arxiv_client._client.base_url) == ARXIV_BASE_URL

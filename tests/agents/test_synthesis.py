@@ -92,9 +92,7 @@ async def _seed_user(db_session: AsyncSession) -> User:
 
 
 async def _seed_plan(db_session: AsyncSession, owner: User) -> ResearchPlan:
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
@@ -140,9 +138,7 @@ def _generic_outputs() -> dict:
         "sentiment_output": _specialist_output("sentiment", "Sentiment take."),
         "risk_output": _specialist_output("risks", "Risk take."),
         "macro_output": _specialist_output("macro", "Macro take."),
-        "comparables_output": _specialist_output(
-            "comparables", "Comparables take."
-        ),
+        "comparables_output": _specialist_output("comparables", "Comparables take."),
     }
 
 
@@ -178,9 +174,7 @@ async def _build_state(
     }
 
 
-async def _build_all_success_state(
-    db_session: AsyncSession, plan: ResearchPlan
-) -> dict:
+async def _build_all_success_state(db_session: AsyncSession, plan: ResearchPlan) -> dict:
     """All 5 specialists SUCCESS with non-None outputs."""
     generic = _generic_outputs()
     return await _build_state(
@@ -206,9 +200,7 @@ async def _build_all_success_state(
 
 def test_compute_memo_status_complete_all_six_success() -> None:
     """All 5 specialist SUCCESS + synthesis SUCCESS => COMPLETE."""
-    assert (
-        _compute_memo_status(["SUCCESS"] * 5, "SUCCESS") == "COMPLETE"
-    )
+    assert _compute_memo_status(["SUCCESS"] * 5, "SUCCESS") == "COMPLETE"
 
 
 def test_compute_memo_status_failed_all_six_failed() -> None:
@@ -228,9 +220,7 @@ def test_compute_memo_status_partial_one_specialist_partial() -> None:
     assert _compute_memo_status(statuses, "SUCCESS") == "PARTIAL"
 
 
-def test_compute_memo_status_partial_synthesis_failed_not_all_specialists_failed() -> (
-    None
-):
+def test_compute_memo_status_partial_synthesis_failed_not_all_specialists_failed() -> None:
     """Synthesis FAILED but not every specialist FAILED => PARTIAL (never FAILED)."""
     statuses = ["SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS"]
     assert _compute_memo_status(statuses, "FAILED") == "PARTIAL"
@@ -401,13 +391,9 @@ async def test_synthesis_reads_fundamentals_output(db_session: AsyncSession) -> 
     async def _fake_call_groq(prompt: str, **kwargs: object) -> GroqResult:
         nonlocal captured_prompt
         captured_prompt = prompt
-        return _make_groq_result(
-            "Overall, AAPL presents a compelling investment case."
-        )
+        return _make_groq_result("Overall, AAPL presents a compelling investment case.")
 
-    with patch(
-        "app.agents.synthesis.call_groq", AsyncMock(side_effect=_fake_call_groq)
-    ):
+    with patch("app.agents.synthesis.call_groq", AsyncMock(side_effect=_fake_call_groq)):
         result = await synthesis_node(state)
 
     assert captured_prompt is not None
@@ -449,9 +435,7 @@ async def test_memo_status_complete_all_six_success(db_session: AsyncSession) ->
         )
     ).scalar_one()
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.prompt_tokens == 555
     assert output_row.completion_tokens == 666
@@ -483,11 +467,7 @@ async def test_memo_status_partial_on_one_specialist_failed(
 
     with patch(
         "app.agents.synthesis.call_groq",
-        AsyncMock(
-            return_value=_make_groq_result(
-                "An overall take despite missing fundamentals."
-            )
-        ),
+        AsyncMock(return_value=_make_groq_result("An overall take despite missing fundamentals.")),
     ):
         result = await synthesis_node(state)
 
@@ -596,9 +576,7 @@ async def test_synthesis_never_raises(db_session: AsyncSession) -> None:
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     # D-07: a human-readable reason sentence -- NOT the literal string "take"
     # (the local variable name holding the LLM's output), which is what the
@@ -632,20 +610,28 @@ async def test_one_agenttask_and_one_agentoutput_persisted(
         await synthesis_node(state)
 
     task_rows = (
-        await db_session.execute(
-            select(AgentTask).where(
-                AgentTask.plan_id == plan.id,
-                AgentTask.agent_type == "Synthesis",
+        (
+            await db_session.execute(
+                select(AgentTask).where(
+                    AgentTask.plan_id == plan.id,
+                    AgentTask.agent_type == "Synthesis",
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(task_rows) == 1
 
     output_rows = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+        (
+            await db_session.execute(
+                select(AgentOutput).where(AgentOutput.task_id == task_rows[0].id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(output_rows) == 1
     assert output_rows[0].completeness == AgentOutputCompleteness.FULL
 

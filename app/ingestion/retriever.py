@@ -28,7 +28,6 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-
 from rank_bm25 import BM25Okapi
 
 import app.services.vector_store as vector_store
@@ -189,8 +188,7 @@ def hybrid_retrieve(
     # ------------------------------------------------------------------
     # Build a lookup from id → (text, metadata)
     id_to_data: dict[str, tuple[str, dict]] = {
-        doc_id: (text, meta)
-        for doc_id, text, meta in zip(ids, texts, metadatas)
+        doc_id: (text, meta) for doc_id, text, meta in zip(ids, texts, metadatas)
     }
 
     # Keep only ids that exist in our candidate pool (union may not add new ids

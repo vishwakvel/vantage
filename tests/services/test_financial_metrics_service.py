@@ -77,7 +77,9 @@ async def test_reupsert_with_changed_value_leaves_single_row(
     assert series["revenue"] == [("2024-03-31", 200.0)]
 
     count_result = await db_session.execute(
-        select(func.count()).select_from(FinancialMetric).where(
+        select(func.count())
+        .select_from(FinancialMetric)
+        .where(
             FinancialMetric.ticker == "DUPCO",
             FinancialMetric.metric_name == "revenue",
             FinancialMetric.period == "2024-03-31",
@@ -177,9 +179,7 @@ async def test_empty_source_returns_empty_mapping_and_writes_nothing(
     assert company.scalar_one_or_none() is None
 
     metrics = await db_session.execute(
-        select(func.count()).select_from(FinancialMetric).where(
-            FinancialMetric.ticker == "EMPTYCO"
-        )
+        select(func.count()).select_from(FinancialMetric).where(FinancialMetric.ticker == "EMPTYCO")
     )
     assert metrics.scalar_one() == 0
 

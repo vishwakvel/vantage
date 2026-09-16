@@ -55,18 +55,17 @@ from app.ingestion.section_constants import (
 # ---------------------------------------------------------------------------
 
 ITEM_TO_SECTION: dict[str, str] = {
-    r"item\s+1a\b": SECTION_RISK_FACTORS,   # Item 1A before Item 1
-    r"item\s+1\b": SECTION_BUSINESS,        # Item 1 (not 1A)
-    r"item\s+7a\b": SECTION_FINANCIALS,     # Item 7A before Item 7
-    r"item\s+7\b": SECTION_MDA,             # Item 7 (not 7A)
-    r"item\s+8\b": SECTION_FINANCIALS,      # Item 8
-    r"item\s+15\b": SECTION_NOTES,          # Item 15
+    r"item\s+1a\b": SECTION_RISK_FACTORS,  # Item 1A before Item 1
+    r"item\s+1\b": SECTION_BUSINESS,  # Item 1 (not 1A)
+    r"item\s+7a\b": SECTION_FINANCIALS,  # Item 7A before Item 7
+    r"item\s+7\b": SECTION_MDA,  # Item 7 (not 7A)
+    r"item\s+8\b": SECTION_FINANCIALS,  # Item 8
+    r"item\s+15\b": SECTION_NOTES,  # Item 15
 }
 
 # Pre-compiled pattern list for O(1) ordered lookup at chunk time
 _COMPILED_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(pattern, re.IGNORECASE), section)
-    for pattern, section in ITEM_TO_SECTION.items()
+    (re.compile(pattern, re.IGNORECASE), section) for pattern, section in ITEM_TO_SECTION.items()
 ]
 
 # Block-level tags that create a visual line/paragraph break when an EDGAR

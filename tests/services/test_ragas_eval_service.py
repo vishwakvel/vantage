@@ -161,9 +161,7 @@ class TestScoreCase:
                 "app.services.ragas_eval_service.hybrid_retrieve",
                 return_value=[_retrieved(REFERENCE_PASSAGE)],
             ),
-            patch(
-                "app.services.groq_client.call_groq", new_callable=AsyncMock
-            ) as mock_groq,
+            patch("app.services.groq_client.call_groq", new_callable=AsyncMock) as mock_groq,
         ):
             await score_case(case)
 
@@ -181,9 +179,7 @@ class TestEvaluateGoldenSet:
     ) -> None:
         cases = [_make_case(case_id="c1"), _make_case(case_id="c2", ticker="MSFT")]
         with (
-            patch(
-                "app.services.ragas_eval_service.load_golden_set", return_value=cases
-            ),
+            patch("app.services.ragas_eval_service.load_golden_set", return_value=cases),
             patch(
                 "app.services.ragas_eval_service.hybrid_retrieve",
                 return_value=[_retrieved(REFERENCE_PASSAGE)],
@@ -201,9 +197,7 @@ class TestEvaluateGoldenSet:
     ) -> None:
         cases = [_make_case(case_id="bad"), _make_case(case_id="good", ticker="MSFT")]
 
-        async def _flaky_score_case(
-            case: GoldenCase, top_k: int = DEFAULT_TOP_K
-        ) -> RagasCaseScore:
+        async def _flaky_score_case(case: GoldenCase, top_k: int = DEFAULT_TOP_K) -> RagasCaseScore:
             if case.case_id == "bad":
                 raise RuntimeError("simulated scoring failure")
             return RagasCaseScore(
@@ -216,9 +210,7 @@ class TestEvaluateGoldenSet:
             )
 
         with (
-            patch(
-                "app.services.ragas_eval_service.load_golden_set", return_value=cases
-            ),
+            patch("app.services.ragas_eval_service.load_golden_set", return_value=cases),
             patch(
                 "app.services.ragas_eval_service.score_case",
                 side_effect=_flaky_score_case,
@@ -238,14 +230,10 @@ class TestEvaluateGoldenSet:
         assert good_row.context_precision == 0.8
         assert good_row.context_recall == 0.9
 
-    async def test_all_rows_in_one_pass_share_one_run_at(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_all_rows_in_one_pass_share_one_run_at(self, db_session: AsyncSession) -> None:
         cases = [_make_case(case_id="c1"), _make_case(case_id="c2", ticker="MSFT")]
         with (
-            patch(
-                "app.services.ragas_eval_service.load_golden_set", return_value=cases
-            ),
+            patch("app.services.ragas_eval_service.load_golden_set", return_value=cases),
             patch(
                 "app.services.ragas_eval_service.hybrid_retrieve",
                 return_value=[_retrieved(REFERENCE_PASSAGE)],
@@ -257,18 +245,14 @@ class TestEvaluateGoldenSet:
         run_ats = {row.run_at for row in rows}
         assert len(run_ats) == 1
 
-    async def test_returns_results_in_golden_set_order(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_returns_results_in_golden_set_order(self, db_session: AsyncSession) -> None:
         cases = [
             _make_case(case_id="first"),
             _make_case(case_id="second", ticker="MSFT"),
             _make_case(case_id="third", ticker="TSLA"),
         ]
         with (
-            patch(
-                "app.services.ragas_eval_service.load_golden_set", return_value=cases
-            ),
+            patch("app.services.ragas_eval_service.load_golden_set", return_value=cases),
             patch(
                 "app.services.ragas_eval_service.hybrid_retrieve",
                 return_value=[_retrieved(REFERENCE_PASSAGE)],
@@ -286,21 +270,15 @@ class TestEvaluateGoldenSet:
             with pytest.raises(GoldenSetError):
                 await evaluate_golden_set(db_session)
 
-    async def test_full_pass_makes_zero_groq_calls(
-        self, db_session: AsyncSession
-    ) -> None:
+    async def test_full_pass_makes_zero_groq_calls(self, db_session: AsyncSession) -> None:
         cases = [_make_case(case_id="c1")]
         with (
-            patch(
-                "app.services.ragas_eval_service.load_golden_set", return_value=cases
-            ),
+            patch("app.services.ragas_eval_service.load_golden_set", return_value=cases),
             patch(
                 "app.services.ragas_eval_service.hybrid_retrieve",
                 return_value=[_retrieved(REFERENCE_PASSAGE)],
             ),
-            patch(
-                "app.services.groq_client.call_groq", new_callable=AsyncMock
-            ) as mock_groq,
+            patch("app.services.groq_client.call_groq", new_callable=AsyncMock) as mock_groq,
         ):
             await evaluate_golden_set(db_session)
 

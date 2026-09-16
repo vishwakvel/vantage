@@ -207,9 +207,7 @@ def _serialize_history(messages: list[ChatMessage]) -> str:
     return "\n".join(f"{m.role}: {m.content}" for m in window)
 
 
-def _build_chat_prompt(
-    memo_body: dict[str, Any], history: list[ChatMessage], question: str
-) -> str:
+def _build_chat_prompt(memo_body: dict[str, Any], history: list[ChatMessage], question: str) -> str:
     """Assemble the single-call prompt, in order: SYSTEM_FRAMING, the
     serialized memo body (DATA), the serialized history (DATA), the new
     question, then COVERAGE_INSTRUCTION last (mirrors

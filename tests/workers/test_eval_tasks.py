@@ -41,9 +41,7 @@ def test_task_resets_session_factory_before_asyncio_run() -> None:
     parent = MagicMock()
 
     with (
-        patch(
-            "app.workers.eval_tasks.reset_session_factory", parent.reset_session_factory
-        ),
+        patch("app.workers.eval_tasks.reset_session_factory", parent.reset_session_factory),
         patch("app.workers.eval_tasks.asyncio.run", parent.asyncio_run),
     ):
         evaluate_retrieval_quality_task()

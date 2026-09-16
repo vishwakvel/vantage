@@ -222,9 +222,7 @@ async def test_add_watchlist_entry_requires_auth(
 
     assert resp.status_code in (401, 403), resp.text
 
-    result = await db_session.execute(
-        select(WatchlistEntry).where(WatchlistEntry.ticker == "SBUX")
-    )
+    result = await db_session.execute(select(WatchlistEntry).where(WatchlistEntry.ticker == "SBUX"))
     assert result.scalars().all() == []
 
 
@@ -320,9 +318,7 @@ async def test_list_watchlist_cross_user_memo_isolation(
     user = await _seed_user(db_session)
     other_user = await _seed_user(db_session)
     await _seed_company(db_session, ticker="AAPL")
-    other_plan = await _seed_research_plan(
-        db_session, other_user, resolved_tickers=["AAPL"]
-    )
+    other_plan = await _seed_research_plan(db_session, other_user, resolved_tickers=["AAPL"])
     await db_session.commit()
     await _seed_memo(
         db_session,
@@ -894,15 +890,11 @@ async def test_toggle_alert_rule_other_user_returns_404(
         rule_id = create_resp.json()["id"]
 
     async with _make_authed_client(db_session, test_settings, other_user) as client:
-        resp = await client.patch(
-            f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False}
-        )
+        resp = await client.patch(f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False})
 
     assert resp.status_code == 404, resp.text
 
-    result = await db_session.execute(
-        select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id))
-    )
+    result = await db_session.execute(select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id)))
     assert result.scalar_one().enabled is True
 
 
@@ -915,9 +907,7 @@ async def test_toggle_alert_rule_unknown_uuid_returns_404(
     await db_session.commit()
 
     async with _make_authed_client(db_session, test_settings, user) as client:
-        resp = await client.patch(
-            f"{WATCHLIST_URL}/rules/{uuid.uuid4()}", json={"enabled": False}
-        )
+        resp = await client.patch(f"{WATCHLIST_URL}/rules/{uuid.uuid4()}", json={"enabled": False})
 
     assert resp.status_code == 404, resp.text
 
@@ -931,9 +921,7 @@ async def test_toggle_alert_rule_non_uuid_returns_422(
     await db_session.commit()
 
     async with _make_authed_client(db_session, test_settings, user) as client:
-        resp = await client.patch(
-            f"{WATCHLIST_URL}/rules/not-a-uuid", json={"enabled": False}
-        )
+        resp = await client.patch(f"{WATCHLIST_URL}/rules/not-a-uuid", json={"enabled": False})
 
     assert resp.status_code == 422, resp.text
 
@@ -955,15 +943,11 @@ async def test_toggle_alert_rule_requires_auth(
         rule_id = create_resp.json()["id"]
 
     async with _make_unauthed_client(db_session, test_settings) as client:
-        resp = await client.patch(
-            f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False}
-        )
+        resp = await client.patch(f"{WATCHLIST_URL}/rules/{rule_id}", json={"enabled": False})
 
     assert resp.status_code in (401, 403), resp.text
 
-    result = await db_session.execute(
-        select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id))
-    )
+    result = await db_session.execute(select(AlertRule).where(AlertRule.id == uuid.UUID(rule_id)))
     assert result.scalar_one().enabled is True
 
 
@@ -1012,9 +996,7 @@ async def test_watchlist_round_trip_full_shape(
         assert scheduled_resp.status_code == 200, scheduled_resp.text
         disabled_rule_id = scheduled_resp.json()["id"]
 
-        await client.patch(
-            f"{WATCHLIST_URL}/rules/{disabled_rule_id}", json={"enabled": False}
-        )
+        await client.patch(f"{WATCHLIST_URL}/rules/{disabled_rule_id}", json={"enabled": False})
 
         resp = await client.get(WATCHLIST_URL)
 

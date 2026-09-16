@@ -37,9 +37,7 @@ class TestPublishAgentStatus:
         mock_redis = AsyncMock()
         settings = _make_settings()
 
-        with patch(
-            "app.services.progress_publisher._redis", return_value=mock_redis
-        ):
+        with patch("app.services.progress_publisher._redis", return_value=mock_redis):
             await publish_agent_status(
                 memo_id="m1",
                 agent_type="FundamentalAnalysis",
@@ -65,9 +63,7 @@ class TestPublishAgentStatus:
         mock_redis.publish.return_value = 0
         settings = _make_settings()
 
-        with patch(
-            "app.services.progress_publisher._redis", return_value=mock_redis
-        ):
+        with patch("app.services.progress_publisher._redis", return_value=mock_redis):
             await publish_agent_status(
                 memo_id="m1",
                 agent_type="SentimentNLP",
@@ -89,12 +85,8 @@ class TestPublishMemoTerminal:
         mock_redis = AsyncMock()
         settings = _make_settings()
 
-        with patch(
-            "app.services.progress_publisher._redis", return_value=mock_redis
-        ):
-            await publish_memo_terminal(
-                memo_id="m1", memo_status="PARTIAL", settings=settings
-            )
+        with patch("app.services.progress_publisher._redis", return_value=mock_redis):
+            await publish_memo_terminal(memo_id="m1", memo_status="PARTIAL", settings=settings)
 
         mock_redis.publish.assert_awaited_once()
         channel, message = mock_redis.publish.await_args.args

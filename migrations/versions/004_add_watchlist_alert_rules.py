@@ -90,9 +90,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["watchlist_id"], ["watchlist_entries.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["watchlist_id"], ["watchlist_entries.id"], ondelete="CASCADE"),
     )
 
 

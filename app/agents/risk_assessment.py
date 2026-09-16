@@ -91,9 +91,7 @@ _REASONS: dict[str, str] = {
     "no_risk_factors": (
         "Risk assessment unavailable — no risk-factors disclosure found for {ticker}"
     ),
-    "news_missing": (
-        "Risk assessment based on filings only — no recent news found for {ticker}"
-    ),
+    "news_missing": ("Risk assessment based on filings only — no recent news found for {ticker}"),
     "llm_error": "Risk assessment unavailable — analysis engine error",
 }
 
@@ -131,9 +129,7 @@ def _build_prompt(
     prompt-injected filing/news text cannot redirect the LLM's instructions,
     only pollute the narrative it's asked to ground in citations.
     """
-    excerpts = "\n\n".join(
-        f"[{chunk['metadata']['section']}] {chunk['text']}" for chunk in chunks
-    )
+    excerpts = "\n\n".join(f"[{chunk['metadata']['section']}] {chunk['text']}" for chunk in chunks)
     if articles:
         news_block = "\n\n".join(
             f"[news] {article.get('title') or ''}: {article.get('description') or ''}"
@@ -205,9 +201,7 @@ async def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
                     AgentOutput(
                         task_id=task.id,
                         completeness=AgentOutputCompleteness.PARTIAL,
-                        missing_fields=[
-                            _REASONS["no_risk_factors"].format(ticker=ticker)
-                        ],
+                        missing_fields=[_REASONS["no_risk_factors"].format(ticker=ticker)],
                         output=_fallback_output(),
                     )
                 )

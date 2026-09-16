@@ -39,9 +39,7 @@ async def test_ensure_company_exists_is_idempotent(db_session: AsyncSession) -> 
     await ensure_company_exists("DBLCO", db_session)
     await ensure_company_exists("DBLCO", db_session)  # must not raise
 
-    result = await db_session.execute(
-        select(Company).where(Company.ticker == "DBLCO")
-    )
+    result = await db_session.execute(select(Company).where(Company.ticker == "DBLCO"))
     rows = result.scalars().all()
     assert len(rows) == 1
 

@@ -43,7 +43,7 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import fitz  # PyMuPDF — lazy at call time; module-level import enables monkeypatching in tests
@@ -150,9 +150,7 @@ def _validate_period_of_report(period_of_report: str) -> str:
                     (WR-04).
     """
     if not _PERIOD_RE.match(period_of_report):
-        raise ValueError(
-            f"Invalid period_of_report {period_of_report!r}. Expected YYYY-MM-DD."
-        )
+        raise ValueError(f"Invalid period_of_report {period_of_report!r}. Expected YYYY-MM-DD.")
     return period_of_report
 
 
@@ -343,7 +341,7 @@ async def _ingest_one_filing(
         visibility=DocumentVisibility.PUBLIC,
         title=f"{ticker} {form_type} {period_of_report}",
         url=doc_url,
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
     session.add(doc)
     await session.flush()  # populate doc.id from PostgreSQL gen_random_uuid()
@@ -435,9 +433,7 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
 
     # --- EDGAR EFTS search for recent 10-K/10-Q filings ---
 
-    three_years_ago = (
-        datetime.now(timezone.utc) - timedelta(days=365 * 3)
-    ).strftime("%Y-%m-%d")
+    three_years_ago = (datetime.now(UTC) - timedelta(days=365 * 3)).strftime("%Y-%m-%d")
 
     try:
         search_resp = await edgar_client.get(
@@ -452,16 +448,14 @@ async def ingest_ticker(ticker: str, session: AsyncSession) -> IngestionResult:
                 "forms": "10-K,10-Q",
                 "dateRange": "custom",
                 "startdt": three_years_ago,
-                "enddt": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "enddt": datetime.now(UTC).strftime("%Y-%m-%d"),
             },
         )
         search_resp.raise_for_status()
         data = search_resp.json()
         hits = data.get("hits", {}).get("hits", [])[:4]  # D-02: last 4 filings
     except Exception as exc:
-        result.source_warnings.append(
-            f"EDGAR search failed for {ticker}: {exc}"
-        )
+        result.source_warnings.append(f"EDGAR search failed for {ticker}: {exc}")
         return result
 
     # --- Process each filing ---
@@ -621,10 +615,7 @@ async def ingest_pdf(
 
     # --- Prepare chunk ids/texts/metadatas for both PostgreSQL and ChromaDB ---
     # ID format: "{canonical_id}:{user_id}:{chunk_index}" — unique per (filing, user, chunk)
-    ids = [
-        f"{canonical_id}:{user_id}:{chunk['metadata']['chunk_index']}"
-        for chunk in chunks
-    ]
+    ids = [f"{canonical_id}:{user_id}:{chunk['metadata']['chunk_index']}" for chunk in chunks]
     texts = [chunk["text"] for chunk in chunks]
     metadatas = [chunk["metadata"] for chunk in chunks]
 
@@ -640,7 +631,7 @@ async def ingest_pdf(
         visibility=DocumentVisibility.PRIVATE,
         title=f"{ticker} {form_type} {period_of_report}",
         url=None,  # no SEC URL for private uploads
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
     session.add(doc_row)
     await session.flush()  # populate doc_row.id from PostgreSQL gen_random_uuid()

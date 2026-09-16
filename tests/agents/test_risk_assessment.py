@@ -203,17 +203,13 @@ async def test_status_success_chunks_and_news(db_session: AsyncSession) -> None:
     assert len(output["citations"]) == len(chunks)
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.SUCCESS
     assert task_row.agent_type == "RiskAssessment"
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
@@ -255,16 +251,12 @@ async def test_status_partial_news_missing(db_session: AsyncSession) -> None:
     assert result["risk_status"] == AgentTaskStatus.PARTIAL.value
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.PARTIAL
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
     assert output_row.missing_fields == [
@@ -308,16 +300,12 @@ async def test_status_failed_zero_chunks(db_session: AsyncSession) -> None:
     mock_news.assert_not_awaited()
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.missing_fields == [
         "Risk assessment unavailable — no risk-factors disclosure found for AAPL"
@@ -361,20 +349,14 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     assert result["risk_output"] is None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
-    assert output_row.missing_fields == [
-        "Risk assessment unavailable — analysis engine error"
-    ]
+    assert output_row.missing_fields == ["Risk assessment unavailable — analysis engine error"]
     assert output_row.prompt_tokens is None
     assert output_row.completion_tokens is None
 

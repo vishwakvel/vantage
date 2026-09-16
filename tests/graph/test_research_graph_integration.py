@@ -96,9 +96,7 @@ async def _seed_user(db_session: AsyncSession) -> User:
 
 
 async def _seed_plan(db_session: AsyncSession, owner: User) -> ResearchPlan:
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
@@ -230,11 +228,7 @@ async def test_all_agent_types_persist_one_task_per_run(
         assert final_state.get(field), f"{field} missing/empty in final_state"
 
     task_rows = (
-        (
-            await db_session.execute(
-                select(AgentTask).where(AgentTask.plan_id == plan.id)
-            )
-        )
+        (await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id)))
         .scalars()
         .all()
     )

@@ -157,6 +157,7 @@ def _parse_contradictions(fenced_json_str: str | None) -> list[dict[str, Any]]:
         items.append(item.model_dump())
     return items
 
+
 #: D-07 controlled vocabulary — short, user-facing failure-reason sentence
 #: rendered inline in the memo's Synthesis section, never a raw technical
 #: status string or (as the exception path previously hardcoded) the name of
@@ -171,9 +172,7 @@ _REASONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def _compute_memo_status(
-    specialist_statuses: list[str], synthesis_status: str
-) -> str:
+def _compute_memo_status(specialist_statuses: list[str], synthesis_status: str) -> str:
     """Compute ``ResearchMemo.status`` from all 5 specialist statuses plus
     Synthesis's own status.
 
@@ -187,9 +186,7 @@ def _compute_memo_status(
     FAILED/PARTIAL while others succeed (EXEC-04), or synthesis FAILED with
     a specialist mix that isn't all-FAILED.
     """
-    if synthesis_status == "FAILED" and all(
-        status == "FAILED" for status in specialist_statuses
-    ):
+    if synthesis_status == "FAILED" and all(status == "FAILED" for status in specialist_statuses):
         return ResearchMemoStatus.FAILED.value
     if synthesis_status == AgentTaskStatus.SUCCESS.value and all(
         status == AgentTaskStatus.SUCCESS.value for status in specialist_statuses
