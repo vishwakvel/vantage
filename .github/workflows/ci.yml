@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# The two job names below — `backend` and `frontend` — are the GitHub status-check
+# contexts plan 14-12 registers as required checks in main's branch protection.
+# Renaming either job silently removes it from the protection picker with no error
+# anywhere.
+#
+# No deploy job belongs in this file. A job gated on `push` never runs on a
+# `pull_request` event, so if such a job were ever selected as a required status
+# check, every pull request would wait forever for a check that structurally
+# cannot start on a PR event. Auto-deploy therefore lives in its own workflow
+# file, added by plan 14-12 (D-17).
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vantage
+          POSTGRES_PASSWORD: vantage
+          POSTGRES_DB: vantage_test
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vantage"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Tool versions come ONLY from the pinned requirements files — never
+      # install ruff/black/pytest by name in a step, or this gate stops
+      # matching what developers run locally (requirements/dev.txt pins
+      # ruff==0.4.4, black==24.4.2, pytest==8.2.0).
+      - name: Install dependencies (base + dev, pinned)
+        run: pip install -r requirements/base.txt -r requirements/dev.txt
+
+      - name: ruff check (whole repo, pinned version)
+        run: ruff check .
+
+      - name: black --check (whole repo, pinned version)
+        run: black --check .
+
+      # Env block for this step must contain nothing but the three
+      # import-time-required Settings fields (app/core/config.py: DATABASE_URL,
+      # JWT_SECRET_KEY, GROQ_API_KEY have no default and raise a pydantic
+      # ValidationError at import if absent). Importing app.main transitively
+      # resolves Settings at import scope, so without these three the job
+      # fails at collection, before any test runs — this is not a loosening
+      # of the hermetic rule, these are non-secret, self-describing CI-only
+      # literals. DATABASE_URL is the exact connection string
+      # tests/conftest.py already hardcodes for test-postgres (port 5433,
+      # database vantage_test). This block must never enable the opt-in
+      # live-test suite (whose three modules self-skip without it and which
+      # makes real external API calls) and must never carry a real key for
+      # any external provider (D-10).
+      - name: pytest (hermetic — real Postgres/Redis service containers)
+        run: pytest tests/ -q --junitxml=/tmp/pytest-report.xml
+        env:
+          DATABASE_URL: postgresql+asyncpg://vantage:vantage@localhost:5433/vantage_test
+          JWT_SECRET_KEY: ci-placeholder-jwt-secret-not-for-production
+          GROQ_API_KEY: ci-placeholder-groq-key-not-for-production
+
+      # Defends against a runner that cannot reach the Postgres/Redis service
+      # containers: tests/conftest.py's db_session fixture calls pytest.skip()
+      # rather than erroring when test-postgres (port 5433) is unreachable, so
+      # a broken service topology produces a run where almost every test
+      # skips and the job still reports success — a gate that gates nothing.
+      # Parses the JUnit XML report with the standard library (never greps
+      # pytest's human-readable summary line, which is not a stable
+      # interface). `if: always()` so a mass-skip can never hide behind an
+      # unrelated test-step failure.
+      - name: Guard — fail on a mass-skip past the measured baseline
+        if: always()
+        shell: python
+        run: |
+          import sys
+          import xml.etree.ElementTree as ET
+
+          # 9 = the services-up skipped count measured and recorded in
+          # 14-02-SUMMARY.md ("## Suite baseline (services up)"), plus a
+          # tolerance of 2 for tests added since that measurement.
+          THRESHOLD = 11
+
+          tree = ET.parse("/tmp/pytest-report.xml")
+          root = tree.getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+
+          skipped = int(suite.get("skipped", 0))
+          tests = int(suite.get("tests", 0))
+          print(f"tests={tests} skipped={skipped} threshold={THRESHOLD}")
+
+          if skipped > THRESHOLD:
+              print(
+                  f"FAIL: {skipped} skipped tests exceeds the baseline of {THRESHOLD} - "
+                  "the service containers are likely unreachable and the suite is "
+                  "passing on a near-empty run.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+      # Static half of DEPLOY-08: greps git-tracked files (never the working
+      # tree, so an untracked local file can never fail somebody else's CI
+      # run) for two populated-credential shapes — a DATABASE_URL connection
+      # string carrying a real password, and a Groq API key literal (the one
+      # external-provider key this project's Settings validates at
+      # import-time and whose key format has a documented, greppable
+      # prefix). .env.example is the one tracked file expected to carry the
+      # first shape (its documented local-dev placeholder) and is the only
+      # path excluded.
+      - name: Secret scan (tracked files, static credential-shape grep)
+        run: |
+          if git grep -nIE '^DATABASE_URL=postgresql(\+asyncpg)?://[^:@[:space:]]+:[^@[:space:]]+@|^GROQ_API_KEY=gs[k]_' -- . ':(exclude).env.example'; then
+            echo "Populated credential shape found in a tracked file outside .env.example — see matches above." >&2
+            exit 1
+          fi
+          echo "No populated credential shapes found in tracked files."
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 20 must be kept aligned with the Node version plan 14-11 sets on
+      # the Vercel project, so this job cannot pass a build the real deploy
+      # would fail.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: npm ci (frontend/package-lock.json is committed)
+        run: npm ci
+
+      - name: npm run build (tsc && vite build — type-checking included)
+        run: npm run build
