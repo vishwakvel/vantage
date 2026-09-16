@@ -45,12 +45,18 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ponytail: dev-only Vite origin, no deployed frontend yet (06-UI-SPEC
-    # "minimal frontend now" scope) — revisit with a configurable origin
-    # list once there's a real deployment target.
+    # Allowed browser origins are environment-driven (D-11, DEPLOY-02) — see
+    # app/core/config.py Settings.ALLOWED_ORIGINS and parse_allowed_origins().
+    from app.core.config import get_settings, parse_allowed_origins  # noqa: PLC0415
+
+    settings = get_settings()
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=parse_allowed_origins(settings.ALLOWED_ORIGINS),
+        # Credentialed CORS stays disabled — this API authenticates with a
+        # bearer token in the Authorization header, not a cookie, so
+        # enabling credentials buys nothing and only widens the attack
+        # surface (D-11).
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

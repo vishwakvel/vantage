@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # Allowed browser origins (D-11, DEPLOY-02): a comma-separated series of
+    # origins the API's CORS middleware accepts, parsed by
+    # parse_allowed_origins() below. Default is the Vite dev server. This
+    # field is deliberately typed as a plain `str`, NOT a collection type —
+    # pydantic-settings v2 attempts to JSON-decode environment values for
+    # collection-typed fields before validation, and would reject a
+    # comma-separated value with a settings error.
+    ALLOWED_ORIGINS: str = "http://localhost:5173"
+
     # JWT — required; no default (fails fast at startup)
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
@@ -48,6 +57,17 @@ class Settings(BaseSettings):
     CHROMADB_HOST: str = "localhost"
     CHROMADB_PORT: int = 8001
     CHROMADB_COLLECTION: str = "vantage_chunks"
+
+
+def parse_allowed_origins(raw: str) -> list[str]:
+    """Split a comma-separated origins string into a clean list.
+
+    Strips surrounding whitespace from each entry and discards any entry
+    that is empty after stripping — this is a security control, not
+    tidiness: without it a trailing or doubled comma injects an empty
+    origin into the CORS allow-list (T-14-24).
+    """
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 def get_settings() -> Settings:
