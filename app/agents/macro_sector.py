@@ -68,12 +68,10 @@ _SERIES_LIMIT: int = 12
 #: user; these are the only strings written to AgentOutput.missing_fields.
 _REASONS: dict[str, str] = {
     "no_macro_data": (
-        "Macro/sector analysis unavailable — economic data could not be "
-        "retrieved"
+        "Macro/sector analysis unavailable — economic data could not be " "retrieved"
     ),
     "partial_macro_data": (
-        "Macro/sector analysis partial — some economic indicators were "
-        "unavailable"
+        "Macro/sector analysis partial — some economic indicators were " "unavailable"
     ),
     "llm_error": "Macro/sector analysis unavailable — analysis engine error",
 }

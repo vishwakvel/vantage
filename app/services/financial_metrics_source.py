@@ -187,9 +187,7 @@ class FinancialMetricsSource:
                     )
 
                 operating_income_value = self._coerce_float(
-                    operating_income_row[column]
-                    if operating_income_row is not None
-                    else None
+                    operating_income_row[column] if operating_income_row is not None else None
                 )
                 if operating_income_value is not None:
                     rows.append(

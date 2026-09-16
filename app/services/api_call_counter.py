@@ -56,9 +56,7 @@ logger = logging.getLogger(__name__)
 # reaching memo assembly.
 _COUNTER_TTL_SECONDS: int = 3600
 
-_current_plan_id: ContextVar[str | None] = ContextVar(
-    "_current_plan_id", default=None
-)
+_current_plan_id: ContextVar[str | None] = ContextVar("_current_plan_id", default=None)
 
 
 def api_call_counter_key(plan_id: str) -> str:
@@ -125,9 +123,7 @@ async def increment_api_call_count(
         await redis.incr(key)
         await redis.expire(key, _COUNTER_TTL_SECONDS)
     except Exception:
-        logger.warning(
-            "api_call_counter: failed to increment counter", exc_info=True
-        )
+        logger.warning("api_call_counter: failed to increment counter", exc_info=True)
 
 
 async def read_and_clear_api_call_count(

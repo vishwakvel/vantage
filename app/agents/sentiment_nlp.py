@@ -61,17 +61,11 @@ _SENTIMENT_LABELS: tuple[str, ...] = ("bullish", "neutral", "bearish")
 #: rendered inline in the memo's Sentiment section, never a raw technical
 #: status string or bare section-name list.
 _REASONS: dict[str, str] = {
-    "both_empty": (
-        "Sentiment analysis unavailable — no recent news found for {ticker}"
-    ),
+    "both_empty": ("Sentiment analysis unavailable — no recent news found for {ticker}"),
     "arxiv_empty": (
-        "Sentiment based on news only — no recent research signals found "
-        "for {ticker}"
+        "Sentiment based on news only — no recent research signals found " "for {ticker}"
     ),
-    "news_empty": (
-        "Sentiment based on research only — no recent news found for "
-        "{ticker}"
-    ),
+    "news_empty": ("Sentiment based on research only — no recent news found for " "{ticker}"),
     "llm_error": "Sentiment analysis unavailable — analysis engine error",
 }
 
@@ -102,9 +96,7 @@ def _build_paper_citation(paper: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_prompt(
-    ticker: str, articles: list[dict[str, Any]], papers: list[dict[str, Any]]
-) -> str:
+def _build_prompt(ticker: str, articles: list[dict[str, Any]], papers: list[dict[str, Any]]) -> str:
     """Build the SentimentNLP prompt, embedding fetched article/abstract text
     as DATA (not instructions) — T-05-PI-SENT mitigation: fetched content
     cannot redirect the LLM's instructions, only pollute the narrative it's
@@ -121,8 +113,7 @@ def _build_prompt(
     )
     paper_excerpts = (
         "\n\n".join(
-            f"[arxiv] {paper.get('title') or ''}: {paper.get('abstract') or ''}"
-            for paper in papers
+            f"[arxiv] {paper.get('title') or ''}: {paper.get('abstract') or ''}" for paper in papers
         )
         or "None available."
     )
@@ -205,9 +196,7 @@ async def sentiment_nlp_node(state: dict[str, Any]) -> dict[str, Any]:
                     AgentOutput(
                         task_id=task.id,
                         completeness=AgentOutputCompleteness.PARTIAL,
-                        missing_fields=_REASONS["both_empty"].format(
-                            ticker=ticker
-                        ),
+                        missing_fields=_REASONS["both_empty"].format(ticker=ticker),
                         output=_fallback_output(),
                     )
                 )

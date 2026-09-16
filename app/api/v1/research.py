@@ -172,9 +172,7 @@ class ResearchRequestBody(BaseModel):
         if not v.strip():
             raise ValueError("raw_query must not be empty")
         if len(v) > _MAX_QUERY_LENGTH:
-            raise ValueError(
-                f"raw_query exceeds {_MAX_QUERY_LENGTH} character limit"
-            )
+            raise ValueError(f"raw_query exceeds {_MAX_QUERY_LENGTH} character limit")
         return v
 
     @field_validator("selected_tickers")
@@ -192,9 +190,7 @@ class ResearchRequestBody(BaseModel):
         if v is None:
             return v
         if len(v) > _MAX_SELECTED_TICKERS:
-            raise ValueError(
-                f"selected_tickers accepts at most {_MAX_SELECTED_TICKERS} entries"
-            )
+            raise ValueError(f"selected_tickers accepts at most {_MAX_SELECTED_TICKERS} entries")
         normalized: list[str] = []
         for ticker in v:
             candidate = ticker.strip().upper()
@@ -313,9 +309,7 @@ class ChatTurnRequest(BaseModel):
         if not v.strip():
             raise ValueError("question must not be empty")
         if len(v) > _MAX_QUESTION_LENGTH:
-            raise ValueError(
-                f"question exceeds {_MAX_QUESTION_LENGTH} character limit"
-            )
+            raise ValueError(f"question exceeds {_MAX_QUESTION_LENGTH} character limit")
         return v
 
 
@@ -374,9 +368,7 @@ async def create_research_request(
         ``ResearchPlanResponse`` on unambiguous resolution, otherwise
         ``ClarificationResponse``.
     """
-    request = ResearchRequest(
-        user_id=user.id, raw_query=body.raw_query, status="PENDING"
-    )
+    request = ResearchRequest(user_id=user.id, raw_query=body.raw_query, status="PENDING")
     session.add(request)
     await session.flush()  # populate request.id for the ResearchPlan FK below
 
@@ -390,17 +382,11 @@ async def create_research_request(
     # D-06 all-or-nothing gate: every term (1 or 2) must resolve at or above
     # the auto-resolve threshold, or the WHOLE request is treated as
     # ambiguous — not just the unresolved term(s).
-    unresolved = [
-        r
-        for r in results
-        if r.ticker is None or r.confidence < _CONFIDENCE_THRESHOLD
-    ]
+    unresolved = [r for r in results if r.ticker is None or r.confidence < _CONFIDENCE_THRESHOLD]
 
     if results and not unresolved:
         # De-duplicated in case a query names the same ticker twice.
-        resolved_tickers = list(
-            dict.fromkeys(r.ticker for r in results if r.ticker is not None)
-        )
+        resolved_tickers = list(dict.fromkeys(r.ticker for r in results if r.ticker is not None))
         request.status = "RESOLVED"
         plan = ResearchPlan(
             request_id=request.id,
@@ -421,9 +407,7 @@ async def create_research_request(
         ingestion_warnings: list[str] = []
         for ticker in resolved_tickers:
             try:
-                ingest_result = await ingestion_service.ingest_ticker(
-                    ticker, session=session
-                )
+                ingest_result = await ingestion_service.ingest_ticker(ticker, session=session)
                 ingestion_warnings.extend(ingest_result.source_warnings)
             except Exception as exc:  # noqa: BLE001 — non-fatal by design
                 ingestion_warnings.append(f"ingestion failed for {ticker}: {exc}")
@@ -447,9 +431,7 @@ async def create_research_request(
     request.status = "NEEDS_CLARIFICATION"
     await session.commit()
     ambiguous_source = unresolved or results
-    ambiguous_terms = [r.term for r in ambiguous_source if r.term] or [
-        body.raw_query
-    ]
+    ambiguous_terms = [r.term for r in ambiguous_source if r.term] or [body.raw_query]
     top_candidates: list[ticker_resolver.CandidateMatch] = []
     for r in ambiguous_source:
         top_candidates.extend(r.candidates)
@@ -458,8 +440,7 @@ async def create_research_request(
         request_id=str(request.id),
         ambiguous_terms=ambiguous_terms,
         candidates=[
-            CandidateMatch(ticker=c.ticker, name=c.name, score=c.score)
-            for c in top_candidates
+            CandidateMatch(ticker=c.ticker, name=c.name, score=c.score) for c in top_candidates
         ],
     )
 
@@ -517,9 +498,7 @@ async def attach_document(
                         ``_RESEARCH_DOC_MAX_BYTES``.
     """
     result = await session.execute(
-        select(ResearchPlan).where(
-            ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id
-        )
+        select(ResearchPlan).where(ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id)
     )
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -609,9 +588,7 @@ async def run_plan(
                         ``user``.
     """
     result = await session.execute(
-        select(ResearchPlan).where(
-            ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id
-        )
+        select(ResearchPlan).where(ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id)
     )
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -682,9 +659,7 @@ async def get_memo(
                         ``user``.
     """
     result = await session.execute(
-        select(ResearchMemo).where(
-            ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id
-        )
+        select(ResearchMemo).where(ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id)
     )
     memo = result.scalar_one_or_none()
     if memo is None:
@@ -700,7 +675,6 @@ async def get_memo(
 
 
 @router.get("/{plan_id}/memo", response_model=MemoResponse)
-
 async def get_latest_memo_for_plan(
     plan_id: str,
     user: User = Depends(get_current_user),
@@ -731,9 +705,7 @@ async def get_latest_memo_for_plan(
                         ``user``, or has no memo yet.
     """
     plan_result = await session.execute(
-        select(ResearchPlan).where(
-            ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id
-        )
+        select(ResearchPlan).where(ResearchPlan.id == plan_id, ResearchPlan.user_id == user.id)
     )
     plan = plan_result.scalar_one_or_none()
     if plan is None:
@@ -790,9 +762,7 @@ async def list_chat_messages(
                         ``user``.
     """
     memo_result = await session.execute(
-        select(ResearchMemo).where(
-            ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id
-        )
+        select(ResearchMemo).where(ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id)
     )
     memo = memo_result.scalar_one_or_none()
     if memo is None:
@@ -867,9 +837,7 @@ async def post_chat_message(
                         (COMPLETE/PARTIAL).
     """
     memo_result = await session.execute(
-        select(ResearchMemo).where(
-            ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id
-        )
+        select(ResearchMemo).where(ResearchMemo.id == memo_id, ResearchMemo.user_id == user.id)
     )
     memo = memo_result.scalar_one_or_none()
     if memo is None:
@@ -885,9 +853,7 @@ async def post_chat_message(
     )
     history = list(history_result.scalars().all())
 
-    narrative, coverage_exceeded = await answer_chat_turn(
-        memo.body, history, body.question
-    )
+    narrative, coverage_exceeded = await answer_chat_turn(memo.body, history, body.question)
 
     user_row = ChatMessage(
         memo_id=memo.id,

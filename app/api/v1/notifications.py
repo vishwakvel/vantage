@@ -132,9 +132,7 @@ async def list_notifications(
     events = await recent_events_for_user(user.id, session)
     unread_count = await unread_count_for_user(user.id, session)
     return NotificationListResponse(
-        notifications=[
-            NotificationResponse(**event_to_payload(event)) for event in events
-        ],
+        notifications=[NotificationResponse(**event_to_payload(event)) for event in events],
         unread_count=unread_count,
     )
 

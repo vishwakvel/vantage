@@ -81,9 +81,7 @@ class ArxivClient:
             title = (title_el.text or "").strip() if title_el is not None else ""
             abstract = (summary_el.text or "").strip() if summary_el is not None else ""
             url = (id_el.text or "").strip() if id_el is not None else ""
-            published = (
-                (published_el.text or "").strip() if published_el is not None else ""
-            )
+            published = (published_el.text or "").strip() if published_el is not None else ""
 
             papers.append(
                 {

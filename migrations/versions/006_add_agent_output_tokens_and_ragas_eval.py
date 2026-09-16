@@ -35,12 +35,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "agent_outputs", sa.Column("prompt_tokens", sa.Integer(), nullable=True)
-    )
-    op.add_column(
-        "agent_outputs", sa.Column("completion_tokens", sa.Integer(), nullable=True)
-    )
+    op.add_column("agent_outputs", sa.Column("prompt_tokens", sa.Integer(), nullable=True))
+    op.add_column("agent_outputs", sa.Column("completion_tokens", sa.Integer(), nullable=True))
 
     op.create_table(
         "ragas_eval_results",
@@ -64,9 +60,7 @@ def upgrade() -> None:
         sa.Column("context_recall", sa.Float(), nullable=True),
         sa.Column("retrieved_count", sa.Integer(), nullable=True),
     )
-    op.create_index(
-        "ix_ragas_eval_results_run_at", "ragas_eval_results", ["run_at"]
-    )
+    op.create_index("ix_ragas_eval_results_run_at", "ragas_eval_results", ["run_at"])
 
 
 def downgrade() -> None:

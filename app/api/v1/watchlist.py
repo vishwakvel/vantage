@@ -295,15 +295,10 @@ async def list_watchlist(
                 id=str(entry.id),
                 ticker=entry.ticker,
                 created_at=entry.created_at.isoformat(),
-                latest_memo_status=(
-                    status_and_date[0] if status_and_date else None
-                ),
-                latest_memo_date=(
-                    status_and_date[1] if status_and_date else None
-                ),
+                latest_memo_status=(status_and_date[0] if status_and_date else None),
+                latest_memo_date=(status_and_date[1] if status_and_date else None),
                 alert_rules=[
-                    _alert_rule_to_response(rule)
-                    for rule in rules_by_entry.get(entry.id, [])
+                    _alert_rule_to_response(rule) for rule in rules_by_entry.get(entry.id, [])
                 ],
             )
         )

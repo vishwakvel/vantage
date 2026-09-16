@@ -83,9 +83,7 @@ def validate_rule_config(rule_type: AlertRuleType, config: object) -> dict[str, 
             range/vocabulary checks below (T-10-03-NUM).
     """
     if not isinstance(config, dict):
-        raise InvalidRuleConfigError(
-            f"config must be a JSON object, got {type(config).__name__}"
-        )
+        raise InvalidRuleConfigError(f"config must be a JSON object, got {type(config).__name__}")
 
     required = _REQUIRED_KEYS.get(rule_type)
     if required is None:
@@ -102,9 +100,7 @@ def validate_rule_config(rule_type: AlertRuleType, config: object) -> dict[str, 
             parts.append(f"missing key(s) {sorted(missing)}")
         if extra:
             parts.append(f"unrecognised key(s) {sorted(extra)}")
-        raise InvalidRuleConfigError(
-            f"invalid config for {rule_type.value}: {'; '.join(parts)}"
-        )
+        raise InvalidRuleConfigError(f"invalid config for {rule_type.value}: {'; '.join(parts)}")
 
     if rule_type is AlertRuleType.NEW_FILING:
         return {}
@@ -114,9 +110,7 @@ def validate_rule_config(rule_type: AlertRuleType, config: object) -> dict[str, 
         # bool is a subclass of int in Python (isinstance(True, int) is
         # True) — the bool check MUST run before the int/float check, or a
         # boolean threshold would silently pass as 0.0/1.0.
-        if isinstance(raw_threshold, bool) or not isinstance(
-            raw_threshold, (int, float)
-        ):
+        if isinstance(raw_threshold, bool) or not isinstance(raw_threshold, int | float):
             raise InvalidRuleConfigError("threshold_pct must be a number")
         threshold_pct = float(raw_threshold)
         if not math.isfinite(threshold_pct):
@@ -129,17 +123,13 @@ def validate_rule_config(rule_type: AlertRuleType, config: object) -> dict[str, 
             )
         direction = config["direction"]
         if direction not in PRICE_MOVE_DIRECTIONS:
-            raise InvalidRuleConfigError(
-                f"direction must be one of {PRICE_MOVE_DIRECTIONS}"
-            )
+            raise InvalidRuleConfigError(f"direction must be one of {PRICE_MOVE_DIRECTIONS}")
         return {"threshold_pct": threshold_pct, "direction": direction}
 
     if rule_type is AlertRuleType.SCHEDULED:
         cadence = config["cadence"]
         if cadence not in SCHEDULED_CADENCES:
-            raise InvalidRuleConfigError(
-                f"cadence must be one of {SCHEDULED_CADENCES}"
-            )
+            raise InvalidRuleConfigError(f"cadence must be one of {SCHEDULED_CADENCES}")
         return {"cadence": cadence}
 
     # Unreachable given _REQUIRED_KEYS above (every branch that passes the

@@ -118,6 +118,7 @@ class TooManyTickersError(ValueError):
     work fans out (T-03-09).
     """
 
+
 # ---------------------------------------------------------------------------
 # Seed company list — used when the companies table has no match (or no
 # session is supplied at all, e.g. in pure unit tests).
@@ -356,9 +357,7 @@ async def _resolve_term(
     # --- LLM fallback (D-01/D-03): fuzzy path is inconclusive ---
     fallback_confidence = scored[0].score if scored else 0.0
     try:
-        groq_result = await call_groq(
-            _build_extraction_prompt(term), max_tokens=_LLM_MAX_TOKENS
-        )
+        groq_result = await call_groq(_build_extraction_prompt(term), max_tokens=_LLM_MAX_TOKENS)
     except Exception:  # noqa: BLE001 — NotImplementedError (Phase 1-3 stub)
         # or any transient Groq failure degrades to the ranked fuzzy
         # candidates; the LLM fallback must never break the request (D-01).
@@ -457,8 +456,7 @@ async def resolve(
     terms = _split_terms(raw_query)
     if len(terms) > _MAX_TERMS:
         raise TooManyTickersError(
-            f"A research request may name at most {_MAX_TERMS} tickers "
-            f"(found {len(terms)})"
+            f"A research request may name at most {_MAX_TERMS} tickers " f"(found {len(terms)})"
         )
     if not terms:
         terms = [raw_query]

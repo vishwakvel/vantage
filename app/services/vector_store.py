@@ -16,7 +16,9 @@ Design principles (from 02-RESEARCH.md):
 
 Public API::
 
-    from app.services.vector_store import embed_texts, embed_and_store, dense_query, canonical_exists
+    from app.services.vector_store import (
+        embed_texts, embed_and_store, dense_query, canonical_exists,
+    )
 
 Module-level singletons (monkeypatchable in tests)::
 
@@ -179,11 +181,7 @@ def dense_query(
     """
     collection = _get_chroma_collection()
     query_embedding = embed_texts([query_text])
-    where = (
-        {"user_id": user_id}
-        if user_id == ""
-        else {"user_id": {"$in": [user_id, ""]}}
-    )
+    where = {"user_id": user_id} if user_id == "" else {"user_id": {"$in": [user_id, ""]}}
     results = collection.query(
         query_embeddings=query_embedding,
         n_results=n_results,

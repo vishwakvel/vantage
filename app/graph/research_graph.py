@@ -34,7 +34,8 @@ graph integration tests) are unaffected.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
@@ -50,9 +51,7 @@ from app.services.progress_publisher import publish_agent_status
 NodeFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
-def _with_progress(
-    node_fn: NodeFn, agent_type: str, status_field: str
-) -> NodeFn:
+def _with_progress(node_fn: NodeFn, agent_type: str, status_field: str) -> NodeFn:
     """Wrap ``node_fn`` to emit RUNNING + terminal progress events (D-07).
 
     Reads ``state["memo_id"]``; when truthy, publishes a RUNNING event for
@@ -66,16 +65,12 @@ def _with_progress(
     async def _wrapped(state: dict[str, Any]) -> dict[str, Any]:
         memo_id = state.get("memo_id")
         if memo_id:
-            await publish_agent_status(
-                memo_id=memo_id, agent_type=agent_type, status="RUNNING"
-            )
+            await publish_agent_status(memo_id=memo_id, agent_type=agent_type, status="RUNNING")
         result = await node_fn(state)
         if memo_id:
             terminal = result.get(status_field)
             if terminal:
-                await publish_agent_status(
-                    memo_id=memo_id, agent_type=agent_type, status=terminal
-                )
+                await publish_agent_status(memo_id=memo_id, agent_type=agent_type, status=terminal)
         return result
 
     return _wrapped
@@ -94,9 +89,7 @@ def build_research_graph():
     workflow = StateGraph(AgentGraphState)
     workflow.add_node(
         "fundamental_analysis",
-        _with_progress(
-            fundamental_analysis_node, "FundamentalAnalysis", "fundamentals_status"
-        ),
+        _with_progress(fundamental_analysis_node, "FundamentalAnalysis", "fundamentals_status"),
     )
     workflow.add_node(
         "sentiment_nlp",
@@ -112,9 +105,7 @@ def build_research_graph():
     )
     workflow.add_node(
         "comparable_companies",
-        _with_progress(
-            comparable_companies_node, "ComparableCompanies", "comparables_status"
-        ),
+        _with_progress(comparable_companies_node, "ComparableCompanies", "comparables_status"),
     )
     workflow.add_node(
         "synthesis",

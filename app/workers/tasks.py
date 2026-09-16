@@ -103,9 +103,7 @@ def _extract_reason(missing_fields: object) -> str | None:
     return str(missing_fields)
 
 
-async def _run_research_async(
-    memo_id: str, plan_id: str, ticker: str, user_id: str
-) -> None:
+async def _run_research_async(memo_id: str, plan_id: str, ticker: str, user_id: str) -> None:
     """Run the research graph and persist its result onto the existing memo.
 
     Sets the ambient plan-id scope first thing to establish the plan-scoped
@@ -128,9 +126,7 @@ async def _run_research_async(
     """
     set_current_plan_id(plan_id)
     async with session_scope() as session:
-        result = await session.execute(
-            select(ResearchMemo).where(ResearchMemo.id == memo_id)
-        )
+        result = await session.execute(select(ResearchMemo).where(ResearchMemo.id == memo_id))
         memo = result.scalar_one()
         memo.status = ResearchMemoStatus.RUNNING
         await session.commit()
@@ -193,9 +189,7 @@ async def _run_research_async(
                 # prior runs' rows too (D-03 rerun lineage), and created_at
                 # desc surfaces this run's row first.
                 if agent_type not in reasons_by_agent_type:
-                    reasons_by_agent_type[agent_type] = _extract_reason(
-                        missing_fields
-                    )
+                    reasons_by_agent_type[agent_type] = _extract_reason(missing_fields)
                     # MEMO-06/OBS-02: this run's own total generation cost —
                     # deliberately token counts only, no monetary figure
                     # (D-04, Groq free tier). Guarded with `or 0` because

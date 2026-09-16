@@ -54,13 +54,9 @@ def upgrade() -> None:
             server_default=sa.text("false"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["alert_rule_id"], ["alert_rules.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["alert_rule_id"], ["alert_rules.id"], ondelete="CASCADE"),
     )
-    op.create_index(
-        "ix_alert_events_alert_rule_id", "alert_events", ["alert_rule_id"]
-    )
+    op.create_index("ix_alert_events_alert_rule_id", "alert_events", ["alert_rule_id"])
 
     op.add_column("alert_rules", sa.Column("state", sa.JSON, nullable=True))
 

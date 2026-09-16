@@ -72,8 +72,7 @@ class TickerRequest(BaseModel):
         normalized = v.upper()
         if not _TICKER_RE.match(normalized):
             raise ValueError(
-                "ticker must be 1-10 uppercase alphanumeric characters "
-                f"(received {v!r})"
+                "ticker must be 1-10 uppercase alphanumeric characters " f"(received {v!r})"
             )
         return normalized
 
