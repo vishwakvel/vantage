@@ -1,0 +1,57 @@
+# Build-context exclude list for the production image (DEPLOY-08).
+#
+# Without this file, `COPY . .` in the Dockerfile ships the entire working
+# tree into the production image — including the developer env file and the
+# full git history. This file closes that exposure.
+#
+# Do NOT add alembic.ini, migrations/, app/, requirements/, or pyproject.toml
+# here: `release_command` runs `alembic upgrade head` from inside this image
+# and needs the alembic config and the migration versions directory present.
+# A future "tidy up the build context" edit must not remove them, or every
+# deploy's migration step silently breaks.
+
+# Git metadata and CI config — not needed at runtime, and the history can
+# contain anything ever committed.
+.git
+.github
+
+# Developer env file and any dotted variants (.env.local, .env.production,
+# etc). The broad exclusion below MUST come before the negated re-include of
+# the example file, or the re-include is overridden and .env.example is
+# excluded too.
+.env
+.env.*
+!.env.example
+
+# Local virtualenv — the image installs packages globally, never uses one.
+.venv
+venv/
+
+# Python bytecode caches and compiled files.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Test suite — not needed to run the app, and it's dead weight in the image.
+tests/
+
+# Frontend — Vercel builds this from its own repo checkout; the backend
+# image never needs it.
+frontend/
+
+# GSD planning / AI tooling directories — not part of the shipped app.
+.planning/
+.serena/
+graphify-out/
+
+# Docker Compose manifests — dev/local topology only, not needed in the image.
+docker-compose.yml
+docker-compose.*.yml
+
+# Documentation — not needed at runtime.
+*.md
