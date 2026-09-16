@@ -20,7 +20,6 @@ import io
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
@@ -191,9 +190,10 @@ def test_ingest_ticker_requires_auth():
     ) as mock_ingest:
         resp = client.post(TICKER_URL, json={"ticker": "AAPL"})
 
-    assert resp.status_code in (401, 403), (
-        f"Expected 401 or 403 for unauthenticated ticker ingest, got {resp.status_code}: {resp.text}"
-    )
+    assert resp.status_code in (
+        401,
+        403,
+    ), f"Expected 401 or 403 for unauthenticated ticker ingest, got {resp.status_code}: {resp.text}"
     mock_ingest.assert_not_awaited()
 
 
@@ -219,9 +219,10 @@ def test_ingest_pdf_requires_auth():
     )
 
     # HTTPBearer returns 403 when header is absent; 401 when token is invalid.
-    assert resp.status_code in (401, 403), (
-        f"Expected 401 or 403 for unauthenticated PDF upload, got {resp.status_code}: {resp.text}"
-    )
+    assert resp.status_code in (
+        401,
+        403,
+    ), f"Expected 401 or 403 for unauthenticated PDF upload, got {resp.status_code}: {resp.text}"
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +269,8 @@ def test_ingest_pdf_uses_principal_user_id():
     mock_ingest_pdf.assert_awaited_once()
     call_kwargs = mock_ingest_pdf.call_args
     # user_id is the second positional arg or keyword 'user_id'
-    called_user_id = (
-        call_kwargs.kwargs.get("user_id")
-        or (call_kwargs.args[1] if len(call_kwargs.args) > 1 else None)
+    called_user_id = call_kwargs.kwargs.get("user_id") or (
+        call_kwargs.args[1] if len(call_kwargs.args) > 1 else None
     )
     assert called_user_id == FAKE_USER_ID, (
         f"ingest_pdf was called with user_id={called_user_id!r}, "
@@ -304,9 +304,9 @@ def test_source_warning_is_non_fatal():
     ):
         resp = client.post(TICKER_URL, json={"ticker": "MSFT"})
 
-    assert resp.status_code == 200, (
-        f"Expected 200 for warning-bearing result, got {resp.status_code}: {resp.text}"
-    )
+    assert (
+        resp.status_code == 200
+    ), f"Expected 200 for warning-bearing result, got {resp.status_code}: {resp.text}"
     body = resp.json()
     assert len(body["source_warnings"]) == 1
     assert "EDGAR search failed" in body["source_warnings"][0]

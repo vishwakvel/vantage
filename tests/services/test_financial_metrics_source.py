@@ -199,9 +199,7 @@ async def test_gross_margin_operating_margin_debt_to_equity_match_computed_ratio
     assert by_metric_period[(METRIC_DEBT_TO_EQUITY, "2024-03-31")] == pytest.approx(0.5)
 
     assert by_metric_period[(METRIC_GROSS_MARGIN, "2023-06-30")] == pytest.approx(280.0 / 700.0)
-    assert by_metric_period[(METRIC_OPERATING_MARGIN, "2023-06-30")] == pytest.approx(
-        140.0 / 700.0
-    )
+    assert by_metric_period[(METRIC_OPERATING_MARGIN, "2023-06-30")] == pytest.approx(140.0 / 700.0)
     assert by_metric_period[(METRIC_DEBT_TO_EQUITY, "2023-06-30")] == pytest.approx(0.5)
 
 
@@ -440,9 +438,7 @@ async def test_get_quarterly_metrics_awards_three_increments() -> None:
     assert mock_increment.await_count == 3
 
 
-async def test_get_quarterly_metrics_return_value_unchanged_when_counter_backend_fails() -> (
-    None
-):
+async def test_get_quarterly_metrics_return_value_unchanged_when_counter_backend_fails() -> None:
     """A failing counter backend (e.g. Redis down) never changes
     get_quarterly_metrics's return value — increment_api_call_count is
     fail-soft by construction (plan 12-03)."""

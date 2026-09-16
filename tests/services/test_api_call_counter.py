@@ -47,9 +47,7 @@ class TestIncrementApiCallCount:
         mock_redis = AsyncMock()
         settings = _make_settings()
 
-        with patch(
-            "app.services.api_call_counter._redis", return_value=mock_redis
-        ):
+        with patch("app.services.api_call_counter._redis", return_value=mock_redis):
             await increment_api_call_count(plan_id="p1", settings=settings)
 
         mock_redis.incr.assert_awaited_once_with(api_call_counter_key("p1"))
@@ -80,14 +78,10 @@ class TestIncrementApiCallCount:
         settings = _make_settings()
         set_current_plan_id("ambient-plan")
 
-        with patch(
-            "app.services.api_call_counter._redis", return_value=mock_redis
-        ):
+        with patch("app.services.api_call_counter._redis", return_value=mock_redis):
             await increment_api_call_count(settings=settings)
 
-        mock_redis.incr.assert_awaited_once_with(
-            api_call_counter_key("ambient-plan")
-        )
+        mock_redis.incr.assert_awaited_once_with(api_call_counter_key("ambient-plan"))
 
     @pytest.mark.anyio
     async def test_redis_incr_failure_does_not_propagate(self) -> None:
@@ -97,9 +91,7 @@ class TestIncrementApiCallCount:
         mock_redis.incr.side_effect = ConnectionError("redis down")
         settings = _make_settings()
 
-        with patch(
-            "app.services.api_call_counter._redis", return_value=mock_redis
-        ):
+        with patch("app.services.api_call_counter._redis", return_value=mock_redis):
             result = await increment_api_call_count(plan_id="p1", settings=settings)
 
         assert result is None
@@ -117,9 +109,7 @@ class TestReadAndClearApiCallCount:
         mock_redis.get.return_value = "7"
         settings = _make_settings()
 
-        with patch(
-            "app.services.api_call_counter._redis", return_value=mock_redis
-        ):
+        with patch("app.services.api_call_counter._redis", return_value=mock_redis):
             result = await read_and_clear_api_call_count("p1", settings=settings)
 
         assert result == 7
@@ -133,9 +123,7 @@ class TestReadAndClearApiCallCount:
         mock_redis.get.return_value = None
         settings = _make_settings()
 
-        with patch(
-            "app.services.api_call_counter._redis", return_value=mock_redis
-        ):
+        with patch("app.services.api_call_counter._redis", return_value=mock_redis):
             result = await read_and_clear_api_call_count("p1", settings=settings)
 
         assert result == 0

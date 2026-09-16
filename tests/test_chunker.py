@@ -14,10 +14,6 @@ Tests verify:
 
 from __future__ import annotations
 
-import re
-
-import pytest
-
 from app.ingestion.chunker import ITEM_TO_SECTION, section_aware_chunk, word_split
 from app.ingestion.section_constants import (
     SECTION_BUSINESS,
@@ -136,32 +132,32 @@ def test_chunks_contain_section_risk_factors_for_item_1a() -> None:
     """Item 1A heading maps chunk metadata.section to SECTION_RISK_FACTORS."""
     chunks = section_aware_chunk(MINIMAL_10K_HTML, BASE_META)
     sections = [c["metadata"]["section"] for c in chunks]
-    assert SECTION_RISK_FACTORS in sections, (
-        f"Expected {SECTION_RISK_FACTORS!r} but got sections: {set(sections)}"
-    )
+    assert (
+        SECTION_RISK_FACTORS in sections
+    ), f"Expected {SECTION_RISK_FACTORS!r} but got sections: {set(sections)}"
 
 
 def test_chunks_contain_section_mda_for_item_7() -> None:
     """Item 7 (not 7A) heading maps chunk metadata.section to SECTION_MDA."""
     chunks = section_aware_chunk(MINIMAL_10K_HTML, BASE_META)
     sections = [c["metadata"]["section"] for c in chunks]
-    assert SECTION_MDA in sections, (
-        f"Expected {SECTION_MDA!r} but got sections: {set(sections)}"
-    )
+    assert SECTION_MDA in sections, f"Expected {SECTION_MDA!r} but got sections: {set(sections)}"
 
 
 def test_chunks_contain_section_financials_for_item_8() -> None:
     """Item 8 heading maps chunk metadata.section to SECTION_FINANCIALS."""
     chunks = section_aware_chunk(MINIMAL_10K_HTML, BASE_META)
     sections = [c["metadata"]["section"] for c in chunks]
-    assert SECTION_FINANCIALS in sections, (
-        f"Expected {SECTION_FINANCIALS!r} but got sections: {set(sections)}"
-    )
+    assert (
+        SECTION_FINANCIALS in sections
+    ), f"Expected {SECTION_FINANCIALS!r} but got sections: {set(sections)}"
 
 
 def test_cover_text_maps_to_section_cover() -> None:
     """Text before the first Item heading maps to SECTION_COVER."""
-    html = "<p>Annual Report cover page summary text.</p><p>Item 1. Business</p><p>We sell things.</p>"
+    html = (
+        "<p>Annual Report cover page summary text.</p><p>Item 1. Business</p><p>We sell things.</p>"
+    )
     chunks = section_aware_chunk(html, BASE_META)
     cover_chunks = [c for c in chunks if c["metadata"]["section"] == SECTION_COVER]
     assert cover_chunks, "Expected at least one chunk with section=SECTION_COVER"
@@ -199,7 +195,9 @@ def test_item_1a_not_confused_with_item_1() -> None:
 
 def test_item_15_maps_to_section_notes() -> None:
     """Item 15 heading maps to SECTION_NOTES."""
-    html = "<p>Item 15. Exhibits and Financial Statement Schedules</p><p>" + _make_words(20) + "</p>"
+    html = (
+        "<p>Item 15. Exhibits and Financial Statement Schedules</p><p>" + _make_words(20) + "</p>"
+    )
     chunks = section_aware_chunk(html, BASE_META)
     notes_chunks = [c for c in chunks if c["metadata"]["section"] == SECTION_NOTES]
     assert notes_chunks, "Expected at least one chunk with section=SECTION_NOTES"
@@ -269,9 +267,9 @@ def test_chunk_index_is_integer() -> None:
     """chunk_index in metadata is an int, not a string."""
     chunks = section_aware_chunk(MINIMAL_10K_HTML, BASE_META)
     for chunk in chunks:
-        assert isinstance(chunk["metadata"]["chunk_index"], int), (
-            f"chunk_index type is {type(chunk['metadata']['chunk_index'])}, expected int"
-        )
+        assert isinstance(
+            chunk["metadata"]["chunk_index"], int
+        ), f"chunk_index type is {type(chunk['metadata']['chunk_index'])}, expected int"
 
 
 def test_chunk_index_increments_monotonically() -> None:
@@ -287,18 +285,19 @@ def test_base_metadata_merged_into_every_chunk() -> None:
     for chunk in chunks:
         for key, val in BASE_META.items():
             assert key in chunk["metadata"], f"Missing key {key!r} in chunk metadata"
-            assert chunk["metadata"][key] == val, (
-                f"Metadata key {key!r}: expected {val!r}, got {chunk['metadata'][key]!r}"
-            )
+            assert (
+                chunk["metadata"][key] == val
+            ), f"Metadata key {key!r}: expected {val!r}, got {chunk['metadata'][key]!r}"
 
 
 def test_chunk_has_text_and_metadata_keys() -> None:
     """Every chunk dict has exactly 'text' and 'metadata' keys."""
     chunks = section_aware_chunk(MINIMAL_10K_HTML, BASE_META)
     for chunk in chunks:
-        assert set(chunk.keys()) == {"text", "metadata"}, (
-            f"Unexpected chunk keys: {set(chunk.keys())}"
-        )
+        assert set(chunk.keys()) == {
+            "text",
+            "metadata",
+        }, f"Unexpected chunk keys: {set(chunk.keys())}"
 
 
 def test_chunk_text_is_non_empty_string() -> None:
@@ -334,9 +333,7 @@ def test_item_to_section_values_are_section_constant_values() -> None:
 
 def test_item_to_section_is_non_empty() -> None:
     """ITEM_TO_SECTION contains at least 5 mappings."""
-    assert len(ITEM_TO_SECTION) >= 5, (
-        f"Expected >=5 item mappings, got {len(ITEM_TO_SECTION)}"
-    )
+    assert len(ITEM_TO_SECTION) >= 5, f"Expected >=5 item mappings, got {len(ITEM_TO_SECTION)}"
 
 
 # ---------------------------------------------------------------------------
@@ -350,9 +347,9 @@ def test_html_tags_stripped_from_chunks() -> None:
     chunks = section_aware_chunk(html, BASE_META)
     for chunk in chunks:
         # No angle brackets should remain in chunk text
-        assert "<" not in chunk["text"] and ">" not in chunk["text"], (
-            f"HTML tag found in chunk text: {chunk['text']!r}"
-        )
+        assert (
+            "<" not in chunk["text"] and ">" not in chunk["text"]
+        ), f"HTML tag found in chunk text: {chunk['text']!r}"
 
 
 def test_section_aware_chunk_empty_html_returns_empty_list() -> None:
@@ -425,14 +422,11 @@ def test_cross_reference_to_item_1a_inside_mda_stays_mda() -> None:
 
     sections = {c["metadata"]["section"] for c in chunks}
     assert SECTION_RISK_FACTORS not in sections, (
-        "Mid-sentence cross-reference to 'Item 1A' was wrongly treated as "
-        "a Risk Factors heading"
+        "Mid-sentence cross-reference to 'Item 1A' was wrongly treated as " "a Risk Factors heading"
     )
     assert SECTION_MDA in sections
 
-    mda_text = " ".join(
-        c["text"] for c in chunks if c["metadata"]["section"] == SECTION_MDA
-    )
+    mda_text = " ".join(c["text"] for c in chunks if c["metadata"]["section"] == SECTION_MDA)
     assert "tax rate" in mda_text
     assert "dividend" in mda_text
 
@@ -478,12 +472,12 @@ def test_heading_with_nbsp_entity_separator_is_detected() -> None:
     )
     chunks = section_aware_chunk(html, BASE_META)
     sections = {c["metadata"]["section"] for c in chunks}
-    assert SECTION_RISK_FACTORS in sections, (
-        f"nbsp-separated 'Item 1A' heading not detected; got sections: {sections}"
-    )
-    assert SECTION_MDA in sections, (
-        f"nbsp-separated 'Item 7' heading not detected; got sections: {sections}"
-    )
+    assert (
+        SECTION_RISK_FACTORS in sections
+    ), f"nbsp-separated 'Item 1A' heading not detected; got sections: {sections}"
+    assert (
+        SECTION_MDA in sections
+    ), f"nbsp-separated 'Item 7' heading not detected; got sections: {sections}"
 
     risk_text = " ".join(
         c["text"] for c in chunks if c["metadata"]["section"] == SECTION_RISK_FACTORS

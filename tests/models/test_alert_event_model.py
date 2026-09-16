@@ -26,8 +26,6 @@ via the `db_session` fixture's built-in skip behavior.
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,9 +96,7 @@ async def test_alert_event_cascades_when_parent_rule_deleted(
     await db_session.delete(rule)
     await db_session.commit()
 
-    result = await db_session.execute(
-        select(AlertEvent).where(AlertEvent.alert_rule_id == rule.id)
-    )
+    result = await db_session.execute(select(AlertEvent).where(AlertEvent.alert_rule_id == rule.id))
     assert result.scalars().all() == []
 
 
@@ -118,9 +114,7 @@ async def test_alert_event_cascades_when_watchlist_entry_deleted(
     await db_session.delete(entry)
     await db_session.commit()
 
-    rule_result = await db_session.execute(
-        select(AlertRule).where(AlertRule.id == rule.id)
-    )
+    rule_result = await db_session.execute(select(AlertRule).where(AlertRule.id == rule.id))
     assert rule_result.scalar_one_or_none() is None
 
     event_result = await db_session.execute(
@@ -143,9 +137,7 @@ async def test_alert_event_survives_parent_rule_disable(
     rule.enabled = False
     await db_session.commit()
 
-    result = await db_session.execute(
-        select(AlertEvent).where(AlertEvent.alert_rule_id == rule.id)
-    )
+    result = await db_session.execute(select(AlertEvent).where(AlertEvent.alert_rule_id == rule.id))
     assert len(result.scalars().all()) == 1
 
 

@@ -107,9 +107,7 @@ async def _seed_research_plan(
     creates, so the document-attach endpoint's ownership lookup
     (``ResearchPlan.user_id == user.id``) has a real row to check against.
     """
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
@@ -144,14 +142,10 @@ def _make_authed_client(
     application.dependency_overrides[get_session] = _override_session
     application.dependency_overrides[get_current_user] = lambda: user
 
-    return AsyncClient(
-        transport=ASGITransport(app=application), base_url="http://testserver"
-    )
+    return AsyncClient(transport=ASGITransport(app=application), base_url="http://testserver")
 
 
-def _make_unauthed_client(
-    db_session: AsyncSession, test_settings: Settings
-) -> AsyncClient:
+def _make_unauthed_client(db_session: AsyncSession, test_settings: Settings) -> AsyncClient:
     """Build an AsyncClient with NO get_current_user override (requires real JWT)."""
     application = create_app()
     application.dependency_overrides[get_settings] = lambda: test_settings
@@ -161,9 +155,7 @@ def _make_unauthed_client(
 
     application.dependency_overrides[get_session] = _override_session
 
-    return AsyncClient(
-        transport=ASGITransport(app=application), base_url="http://testserver"
-    )
+    return AsyncClient(transport=ASGITransport(app=application), base_url="http://testserver")
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +181,7 @@ async def test_create_research_request_happy_path(
             "app.api.v1.research.ingestion_service.ingest_ticker",
             new=AsyncMock(return_value=mock_result),
         ) as mock_ingest:
-            resp = await client.post(
-                RESEARCH_URL, json={"raw_query": "Tell me about Apple"}
-            )
+            resp = await client.post(RESEARCH_URL, json={"raw_query": "Tell me about Apple"})
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -200,9 +190,7 @@ async def test_create_research_request_happy_path(
     plan_id = uuid.UUID(body["plan_id"])  # valid UUID string
     mock_ingest.assert_awaited_once()
 
-    result = await db_session.execute(
-        select(ResearchPlan).where(ResearchPlan.id == plan_id)
-    )
+    result = await db_session.execute(select(ResearchPlan).where(ResearchPlan.id == plan_id))
     plan = result.scalar_one_or_none()
     assert plan is not None
     assert plan.resolved_tickers == ["AAPL"]
@@ -220,9 +208,7 @@ def _make_pdf_upload_file() -> dict[str, tuple[str, io.BytesIO, str]]:
 
 
 @pytest.mark.anyio
-async def test_attach_document_success(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
+async def test_attach_document_success(db_session: AsyncSession, test_settings: Settings) -> None:
     """POST /research/{plan_id}/documents accepts a PDF for a plan the user owns (SC#5)."""
     user = await _seed_user(db_session)
     plan = await _seed_research_plan(db_session, user, resolved_tickers=["AAPL"])
@@ -357,9 +343,7 @@ async def test_create_research_request_requires_auth(
         new=AsyncMock(),
     ) as mock_ingest:
         async with _make_unauthed_client(db_session, test_settings) as client:
-            resp = await client.post(
-                RESEARCH_URL, json={"raw_query": "Tell me about Apple"}
-            )
+            resp = await client.post(RESEARCH_URL, json={"raw_query": "Tell me about Apple"})
 
     assert resp.status_code in (401, 403), (
         f"Expected 401 or 403 for unauthenticated research request, "
@@ -428,9 +412,7 @@ async def test_create_research_request_multi_ticker_happy_path(
             "app.api.v1.research.ingestion_service.ingest_ticker",
             new=AsyncMock(return_value=mock_result),
         ) as mock_ingest:
-            resp = await client.post(
-                RESEARCH_URL, json={"raw_query": "Compare AAPL and MSFT"}
-            )
+            resp = await client.post(RESEARCH_URL, json={"raw_query": "Compare AAPL and MSFT"})
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -537,9 +519,7 @@ async def test_create_research_request_resubmit_with_selected_ticker(
     plan_id = uuid.UUID(body["plan_id"])
     mock_ingest.assert_awaited_once()
 
-    result = await db_session.execute(
-        select(ResearchPlan).where(ResearchPlan.id == plan_id)
-    )
+    result = await db_session.execute(select(ResearchPlan).where(ResearchPlan.id == plan_id))
     plan = result.scalar_one_or_none()
     assert plan is not None
     assert plan.resolved_tickers == ["AAPL"]

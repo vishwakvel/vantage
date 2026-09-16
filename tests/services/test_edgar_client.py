@@ -35,6 +35,7 @@ def _reset_plan_id_scope():
     yield
     set_current_plan_id(None)
 
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -179,9 +180,9 @@ def test_reset_edgar_client_replaces_both_httpx_clients() -> None:
 
     mod.reset_edgar_client()
 
-    assert id(mod.edgar_client) == original_singleton_id, (
-        "reset_edgar_client must not replace the module-level singleton object"
-    )
+    assert (
+        id(mod.edgar_client) == original_singleton_id
+    ), "reset_edgar_client must not replace the module-level singleton object"
     assert mod.edgar_client._client is not original_client
     assert mod.edgar_client._archive_client is not original_archive_client
     assert isinstance(mod.edgar_client._client, httpx.AsyncClient)

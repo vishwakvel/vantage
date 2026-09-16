@@ -36,7 +36,6 @@ from app.services.ingestion_service import (
     ingest_ticker,
 )
 
-
 # ---------------------------------------------------------------------------
 # Task 1: compute_canonical_id — INGEST-05 determinism
 # ---------------------------------------------------------------------------
@@ -212,9 +211,7 @@ async def test_ingest_ticker_indexes_chunks():
         patch("app.services.ingestion_service.edgar_client") as mock_edgar,
     ):
         mock_edgar.get = AsyncMock(return_value=_make_search_resp())
-        mock_edgar.get_archive = AsyncMock(
-            side_effect=[_make_index_resp(), _make_html_resp()]
-        )
+        mock_edgar.get_archive = AsyncMock(side_effect=[_make_index_resp(), _make_html_resp()])
 
         result = await ingest_ticker("AAPL", mock_session)
 
@@ -228,9 +225,9 @@ async def test_ingest_ticker_indexes_chunks():
     metadatas = call_kwargs["metadatas"]
 
     # All chunks must carry user_id="" (public filing, INGEST-03 boundary)
-    assert all(m["user_id"] == "" for m in metadatas), (
-        "All chunk metadatas must have user_id='' for public filings"
-    )
+    assert all(
+        m["user_id"] == "" for m in metadatas
+    ), "All chunk metadatas must have user_id='' for public filings"
     # All chunks must carry the correct ticker
     assert all(m["ticker"] == "AAPL" for m in metadatas)
     # Section must be a non-empty string from section_constants (not inline literal)
@@ -286,9 +283,7 @@ async def test_edgar_failure_returns_warning():
     ):
         mock_edgar.get = AsyncMock(return_value=_make_search_resp())
         # Archive download fails with a network timeout
-        mock_edgar.get_archive = AsyncMock(
-            side_effect=RuntimeError("EDGAR Archives timeout")
-        )
+        mock_edgar.get_archive = AsyncMock(side_effect=RuntimeError("EDGAR Archives timeout"))
 
         # Must NOT raise — failures become source_warnings (INGEST-04)
         result = await ingest_ticker("AAPL", mock_session)
@@ -371,21 +366,21 @@ async def test_ingest_pdf_user_scoped():
     ids = call_kwargs["ids"]
 
     # All chunks must carry the uploader's user_id (INGEST-03 boundary)
-    assert all(m["user_id"] == user_id for m in metadatas), (
-        "Private chunks must be tagged with the uploader's user_id"
-    )
+    assert all(
+        m["user_id"] == user_id for m in metadatas
+    ), "Private chunks must be tagged with the uploader's user_id"
     # user_id must be non-empty (never empty string like public filings)
     assert all(m["user_id"] != "" for m in metadatas)
 
     # Chunk IDs must include user_id for per-user namespacing
-    assert all(user_id in chunk_id for chunk_id in ids), (
-        "Chunk IDs must contain user_id for per-user namespacing"
-    )
+    assert all(
+        user_id in chunk_id for chunk_id in ids
+    ), "Chunk IDs must contain user_id for per-user namespacing"
     # Chunk IDs must also include canonical_id — same formula as ingest_ticker (INGEST-05)
     expected_canonical = compute_canonical_id("AAPL", "10-K", "2023-09-30")
-    assert all(expected_canonical in chunk_id for chunk_id in ids), (
-        "Chunk IDs must embed canonical_id to share dedup key with EDGAR path"
-    )
+    assert all(
+        expected_canonical in chunk_id for chunk_id in ids
+    ), "Chunk IDs must embed canonical_id to share dedup key with EDGAR path"
 
     # fitz.open must have been called (text extraction path exercised)
     mock_fitz.open.assert_called_once()
@@ -528,8 +523,9 @@ def test_user_isolation_end_to_end(monkeypatch):
     - hybrid_retrieve(query, user_id=user_a) returns userA's chunk
     """
     import numpy as np
-    import app.services.vector_store as vs
+
     import app.ingestion.retriever as retriever_module
+    import app.services.vector_store as vs
     from app.ingestion.retriever import hybrid_retrieve
 
     user_a_id = "user-a-uuid-1234"
@@ -573,16 +569,16 @@ def test_user_isolation_end_to_end(monkeypatch):
 
     # userB retrieval must return zero results — userA's chunks are invisible (INGEST-03)
     results_b = hybrid_retrieve("Apple revenue", user_id=user_b_id, top_k=10)
-    assert results_b == [], (
-        "userB retrieval must return zero results when only userA chunks exist (INGEST-03)"
-    )
+    assert (
+        results_b == []
+    ), "userB retrieval must return zero results when only userA chunks exist (INGEST-03)"
 
     # userA retrieval must return the chunk tagged with their user_id
     results_a = hybrid_retrieve("Apple revenue", user_id=user_a_id, top_k=10)
     assert len(results_a) == 1, "userA must be able to retrieve their own chunk"
-    assert results_a[0]["metadata"]["user_id"] == user_a_id, (
-        "Retrieved chunk must be tagged with userA's user_id"
-    )
+    assert (
+        results_a[0]["metadata"]["user_id"] == user_a_id
+    ), "Retrieved chunk must be tagged with userA's user_id"
 
 
 @pytest.mark.anyio

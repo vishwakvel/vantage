@@ -230,15 +230,11 @@ def _patch_all_agents(
         [_make_fred_observation()] if fred_observations is None else fred_observations
     )
     peers = ["MSFT", "GOOGL"] if peers is None else peers
-    peer_metrics = (
-        [_make_peer_metric(p) for p in peers] if peer_metrics is None else peer_metrics
-    )
+    peer_metrics = [_make_peer_metric(p) for p in peers] if peer_metrics is None else peer_metrics
 
     patches = [
         # FundamentalAnalysis — reads state["session"].
-        patch(
-            "app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks
-        ),
+        patch("app.agents.fundamental_analysis.hybrid_retrieve", return_value=chunks),
         patch(
             "app.agents.fundamental_analysis.call_groq",
             new=AsyncMock(return_value=_FUNDAMENTALS_GROQ_RESULT),
@@ -328,9 +324,7 @@ async def test_run_creates_pending_memo_and_dispatches_task(
     await db_session.commit()
 
     async with _make_authed_client(db_session, test_settings, user) as client:
-        with patch(
-            "app.api.v1.research.run_research_task.delay", new=MagicMock()
-        ) as mock_delay:
+        with patch("app.api.v1.research.run_research_task.delay", new=MagicMock()) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
 
     assert resp.status_code == 200, resp.text
@@ -373,9 +367,7 @@ async def test_run_other_user_plan_returns_404(
     await db_session.commit()
 
     async with _make_authed_client(db_session, test_settings, other_user) as client:
-        with patch(
-            "app.api.v1.research.run_research_task.delay", new=MagicMock()
-        ) as mock_delay:
+        with patch("app.api.v1.research.run_research_task.delay", new=MagicMock()) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
 
     assert resp.status_code == 404, resp.text
@@ -396,9 +388,7 @@ async def test_run_missing_plan_returns_404(
     random_plan_id = uuid.uuid4()
 
     async with _make_authed_client(db_session, test_settings, user) as client:
-        with patch(
-            "app.api.v1.research.run_research_task.delay", new=MagicMock()
-        ) as mock_delay:
+        with patch("app.api.v1.research.run_research_task.delay", new=MagicMock()) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{random_plan_id}/run")
 
     assert resp.status_code == 404, resp.text
@@ -411,9 +401,7 @@ async def test_run_missing_plan_returns_404(
 
 
 @pytest.mark.anyio
-async def test_run_requires_auth(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
+async def test_run_requires_auth(db_session: AsyncSession, test_settings: Settings) -> None:
     """Unauthenticated /run request is rejected before any work; no memo
     created, no dispatch."""
     user = await _seed_user(db_session)
@@ -421,14 +409,11 @@ async def test_run_requires_auth(
     await db_session.commit()
 
     async with _make_unauthed_client(db_session, test_settings) as client:
-        with patch(
-            "app.api.v1.research.run_research_task.delay", new=MagicMock()
-        ) as mock_delay:
+        with patch("app.api.v1.research.run_research_task.delay", new=MagicMock()) as mock_delay:
             resp = await client.post(f"{RESEARCH_URL}/{plan.id}/run")
 
     assert resp.status_code in (401, 403), (
-        f"Expected 401 or 403 for unauthenticated /run, got "
-        f"{resp.status_code}: {resp.text}"
+        f"Expected 401 or 403 for unauthenticated /run, got " f"{resp.status_code}: {resp.text}"
     )
     mock_delay.assert_not_called()
 
@@ -442,9 +427,7 @@ async def test_run_requires_auth(
 
 
 @pytest.mark.anyio
-async def test_rerun_sets_parent_memo_id(
-    db_session: AsyncSession, test_settings: Settings
-) -> None:
+async def test_rerun_sets_parent_memo_id(db_session: AsyncSession, test_settings: Settings) -> None:
     """Running twice creates two ResearchMemo rows; the second's parent_memo_id
     equals the first's id — lineage is preserved by the dispatch-only
     endpoint too."""

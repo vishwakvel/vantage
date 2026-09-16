@@ -108,7 +108,7 @@ class _FakeRedisClient:
         self,
         revoked_jtis: set[str] | None = None,
         events: list[dict] | None = None,
-        pubsub: "_FakePubSub | None" = None,
+        pubsub: _FakePubSub | None = None,
     ):
         self._revoked = revoked_jtis or set()
         self._events = events or []
@@ -121,7 +121,7 @@ class _FakeRedisClient:
     async def close(self) -> None:
         return None
 
-    def pubsub(self) -> "_FakePubSub":
+    def pubsub(self) -> _FakePubSub:
         if self._pubsub is not None:
             return self._pubsub
         return _FakePubSub(self._events)
@@ -407,7 +407,9 @@ def test_subscribe_precedes_snapshot():
 
     subscribe_index = next(i for i, c in enumerate(call_log) if c.startswith("subscribe:"))
     snapshot_helper_indices = [
-        i for i, c in enumerate(call_log) if c in ("recent_events_for_user", "unread_count_for_user")
+        i
+        for i, c in enumerate(call_log)
+        if c in ("recent_events_for_user", "unread_count_for_user")
     ]
     assert snapshot_helper_indices, "snapshot helpers were never called"
     assert subscribe_index < min(snapshot_helper_indices)

@@ -91,9 +91,7 @@ async def _seed_user(db_session: AsyncSession) -> User:
 
 
 async def _seed_plan(db_session: AsyncSession, owner: User) -> ResearchPlan:
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
@@ -190,16 +188,12 @@ async def test_status_success_both_sources(db_session: AsyncSession) -> None:
     assert output["section"] == SECTION_SENTIMENT
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.SUCCESS
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.FULL
     assert output_row.missing_fields is None
@@ -235,9 +229,7 @@ async def test_status_partial_arxiv_missing(db_session: AsyncSession) -> None:
         patch(
             "app.agents.sentiment_nlp.call_groq",
             AsyncMock(
-                return_value=_make_groq_result(
-                    text="Sentiment: neutral\n\nMixed signals for AAPL."
-                )
+                return_value=_make_groq_result(text="Sentiment: neutral\n\nMixed signals for AAPL.")
             ),
         ),
     ):
@@ -246,21 +238,15 @@ async def test_status_partial_arxiv_missing(db_session: AsyncSession) -> None:
     assert result["sentiment_status"] == AgentTaskStatus.PARTIAL.value
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.PARTIAL
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert output_row.completeness == AgentOutputCompleteness.PARTIAL
-    assert "unavailable" in output_row.missing_fields or (
-        "no recent" in output_row.missing_fields
-    )
+    assert "unavailable" in output_row.missing_fields or ("no recent" in output_row.missing_fields)
     assert " " in output_row.missing_fields  # human-readable sentence, not enum
 
 
@@ -300,16 +286,12 @@ async def test_status_failed_both_empty(db_session: AsyncSession) -> None:
     mock_call_groq.assert_not_awaited()
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert "no recent news" in output_row.missing_fields
     assert output_row.prompt_tokens is None
@@ -353,16 +335,12 @@ async def test_node_never_raises_on_llm_error(db_session: AsyncSession) -> None:
     assert result["sentiment_output"] is None
 
     task_row = (
-        await db_session.execute(
-            select(AgentTask).where(AgentTask.plan_id == plan.id)
-        )
+        await db_session.execute(select(AgentTask).where(AgentTask.plan_id == plan.id))
     ).scalar_one()
     assert task_row.status == AgentTaskStatus.FAILED
 
     output_row = (
-        await db_session.execute(
-            select(AgentOutput).where(AgentOutput.task_id == task_row.id)
-        )
+        await db_session.execute(select(AgentOutput).where(AgentOutput.task_id == task_row.id))
     ).scalar_one()
     assert "unavailable" in output_row.missing_fields
     assert output_row.prompt_tokens is None

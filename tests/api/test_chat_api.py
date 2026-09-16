@@ -98,9 +98,7 @@ async def test_list_chat_messages_returns_ordered_history(
     memo = await _seed_memo(db_session, plan, user)
 
     first = await _seed_chat_message(db_session, memo.id, user, role="user", content="q1")
-    second = await _seed_chat_message(
-        db_session, memo.id, user, role="assistant", content="a1"
-    )
+    second = await _seed_chat_message(db_session, memo.id, user, role="assistant", content="a1")
     third = await _seed_chat_message(db_session, memo.id, user, role="user", content="q2")
 
     async with _make_authed_client(db_session, test_settings, user) as client:
@@ -208,9 +206,9 @@ async def test_post_chat_message_success_persists_two_rows(
     assert body["coverage_exceeded"] is False
 
     rows_result = await db_session.execute(
-        select(ChatMessage).where(ChatMessage.memo_id == memo.id).order_by(
-            ChatMessage.created_at.asc()
-        )
+        select(ChatMessage)
+        .where(ChatMessage.memo_id == memo.id)
+        .order_by(ChatMessage.created_at.asc())
     )
     rows = rows_result.scalars().all()
     assert len(rows) == 2
@@ -357,9 +355,7 @@ async def test_post_chat_message_coverage_exceeded_round_trips(
     assert body["coverage_exceeded"] is True
 
     rows_result = await db_session.execute(
-        select(ChatMessage).where(
-            ChatMessage.memo_id == memo.id, ChatMessage.role == "assistant"
-        )
+        select(ChatMessage).where(ChatMessage.memo_id == memo.id, ChatMessage.role == "assistant")
     )
     assistant_row = rows_result.scalar_one()
     assert assistant_row.coverage_exceeded is True

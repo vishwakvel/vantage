@@ -24,7 +24,7 @@ class _FakeAsyncSession:
         self.commit = AsyncMock()
         self.execute = AsyncMock()
 
-    async def __aenter__(self) -> "_FakeAsyncSession":
+    async def __aenter__(self) -> _FakeAsyncSession:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -37,12 +37,12 @@ def _fake_session_factory() -> _FakeAsyncSession:
 
 
 @pytest.mark.anyio
-async def test_session_scope_yields_duck_typed_async_session(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_session_scope_yields_duck_typed_async_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """session_scope() is usable as an async context manager yielding a
     duck-typed AsyncSession exposing .add/.commit/.execute."""
-    monkeypatch.setattr(
-        session_module, "_get_session_factory", lambda: _fake_session_factory
-    )
+    monkeypatch.setattr(session_module, "_get_session_factory", lambda: _fake_session_factory)
 
     async with session_scope() as session:
         assert hasattr(session, "add")
@@ -59,9 +59,7 @@ async def test_session_scope_yields_distinct_sessions_per_entry(
 ) -> None:
     """Two sequential session_scope() entries yield two DISTINCT session
     objects — proving each concurrent node gets its own session."""
-    monkeypatch.setattr(
-        session_module, "_get_session_factory", lambda: _fake_session_factory
-    )
+    monkeypatch.setattr(session_module, "_get_session_factory", lambda: _fake_session_factory)
 
     async with session_scope() as a:
         pass

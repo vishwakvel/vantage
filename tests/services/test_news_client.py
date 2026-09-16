@@ -301,11 +301,11 @@ def test_reset_news_client_replaces_the_httpx_client() -> None:
 
     mod.reset_news_client()
 
-    assert id(mod.news_client) == original_singleton_id, (
-        "reset_news_client must not replace the module-level singleton object"
-    )
-    assert mod.news_client._client is not original_client, (
-        "reset_news_client must replace the underlying httpx.AsyncClient"
-    )
+    assert (
+        id(mod.news_client) == original_singleton_id
+    ), "reset_news_client must not replace the module-level singleton object"
+    assert (
+        mod.news_client._client is not original_client
+    ), "reset_news_client must replace the underlying httpx.AsyncClient"
     assert isinstance(mod.news_client._client, httpx.AsyncClient)
     assert str(mod.news_client._client.base_url) == NEWS_API_BASE_URL + "/"

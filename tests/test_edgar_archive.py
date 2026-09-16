@@ -20,7 +20,6 @@ from app.services.edgar_client import (
     EDGARClient,
 )
 
-
 # ---------------------------------------------------------------------------
 # EDGAR_ARCHIVES_URL constant
 # ---------------------------------------------------------------------------
@@ -57,7 +56,9 @@ async def test_get_archive_request_host_is_www_sec_gov() -> None:
         base_url=EDGAR_ARCHIVES_URL,
     )
 
-    await client.get_archive("/Archives/edgar/data/0000320193/000032019323000106/0000320193-23-000106-index.json")
+    await client.get_archive(
+        "/Archives/edgar/data/0000320193/000032019323000106/0000320193-23-000106-index.json"
+    )
     await client.close()
 
     assert len(captured_host) == 1

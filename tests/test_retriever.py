@@ -13,13 +13,9 @@ Strategy:
 
 from __future__ import annotations
 
-import sys
-import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Test helpers — build fake dense_query results
@@ -152,20 +148,22 @@ class TestBM25Rank:
         from app.ingestion.retriever import bm25_rank
 
         candidates = [
-            "Revenue grew significantly",           # 0 — contains "revenue"
-            "unrelated text here",                  # 1 — no match
-            "net income declined last quarter",     # 2 — no match
-            "operating expenses increased",         # 3 — no match
+            "Revenue grew significantly",  # 0 — contains "revenue"
+            "unrelated text here",  # 1 — no match
+            "net income declined last quarter",  # 2 — no match
+            "operating expenses increased",  # 3 — no match
         ]
         # Query in upper-case; tokenised to lowercase → should match index 0
         lower_indices = bm25_rank("revenue", candidates)
         upper_indices = bm25_rank("REVENUE", candidates)
         # Both queries should produce the same ranking (case-insensitive)
-        assert lower_indices == upper_indices, (
-            "BM25 ranking must be identical for 'revenue' and 'REVENUE'"
-        )
+        assert (
+            lower_indices == upper_indices
+        ), "BM25 ranking must be identical for 'revenue' and 'REVENUE'"
         # And both should rank the matching doc first
-        assert lower_indices[0] == 0, f"Matching doc (index 0) should rank first; got {lower_indices}"
+        assert (
+            lower_indices[0] == 0
+        ), f"Matching doc (index 0) should rank first; got {lower_indices}"
 
     def test_bm25_rank_single_candidate(self):
         """Single candidate always returns [0]."""
@@ -208,8 +206,8 @@ class TestHybridRetrieve:
 
     def test_hybrid_retrieve_forwards_user_id(self, monkeypatch):
         """dense_query must receive the exact user_id passed to hybrid_retrieve."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
+        import app.services.vector_store as vs
 
         ids = ["c1", "c2", "c3"]
         texts = ["alpha revenue growth", "beta earnings decline", "gamma net income"]
@@ -222,19 +220,19 @@ class TestHybridRetrieve:
         fake_reranker.predict.return_value = np.array([0.9, 0.7, 0.5])
         monkeypatch.setattr(retriever_module, "_reranker", fake_reranker)
 
-        results = retriever_module.hybrid_retrieve("revenue", "user-abc-123", top_k=3)
+        retriever_module.hybrid_retrieve("revenue", "user-abc-123", top_k=3)
 
         # Assert user_id was forwarded
         call_args = mock_dense.call_args
         called_user_id = call_args[0][1] if call_args[0] else call_args[1].get("user_id")
-        assert called_user_id == "user-abc-123", (
-            f"dense_query must receive user_id='user-abc-123', got '{called_user_id}'"
-        )
+        assert (
+            called_user_id == "user-abc-123"
+        ), f"dense_query must receive user_id='user-abc-123', got '{called_user_id}'"
 
     def test_hybrid_retrieve_result_length_bounded_by_top_k(self, monkeypatch):
         """Returned list length must be <= top_k."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
+        import app.services.vector_store as vs
 
         # 5 candidates returned by dense_query
         ids = [f"c{i}" for i in range(5)]
@@ -251,8 +249,8 @@ class TestHybridRetrieve:
 
     def test_hybrid_retrieve_ordered_by_reranker_score(self, monkeypatch):
         """Results must be sorted by cross-encoder score (highest first)."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
+        import app.services.vector_store as vs
 
         ids = ["c0", "c1", "c2"]
         texts = ["text zero", "text one", "text two"]
@@ -271,8 +269,8 @@ class TestHybridRetrieve:
 
     def test_hybrid_retrieve_result_schema(self, monkeypatch):
         """Each result item must have id, text, metadata, and score keys."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
+        import app.services.vector_store as vs
 
         ids = ["chunk-1"]
         texts = ["some relevant text"]
@@ -297,8 +295,8 @@ class TestHybridRetrieve:
 
     def test_hybrid_retrieve_no_real_chromadb_call(self, monkeypatch):
         """Verifies test isolation: dense_query mock is called, not the real ChromaDB."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
+        import app.services.vector_store as vs
 
         ids = ["d1", "d2"]
         texts = ["text one about earnings", "text two about revenue"]
@@ -315,8 +313,8 @@ class TestHybridRetrieve:
 
     def test_hybrid_retrieve_empty_dense_results(self, monkeypatch):
         """When dense_query returns no results, hybrid_retrieve returns []."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
+        import app.services.vector_store as vs
 
         empty_result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
         monkeypatch.setattr(vs, "dense_query", MagicMock(return_value=empty_result))
@@ -330,9 +328,8 @@ class TestHybridRetrieve:
 
     def test_hybrid_retrieve_bm25_built_from_candidates_only(self, monkeypatch):
         """BM25 index is built from the dense candidate set, not a global corpus (Pitfall 5)."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
-        from app.ingestion.retriever import bm25_rank
+        import app.services.vector_store as vs
 
         ids = ["e1", "e2"]
         texts = ["specific term xyzzy in first chunk", "another unrelated passage"]
@@ -349,8 +346,8 @@ class TestHybridRetrieve:
 
     def test_hybrid_retrieve_public_user_id_empty_string(self, monkeypatch):
         """Empty string user_id (public filings) is valid and forwarded correctly."""
-        import app.services.vector_store as vs
         import app.ingestion.retriever as retriever_module
+        import app.services.vector_store as vs
 
         ids = ["pub1"]
         texts = ["public filing text"]

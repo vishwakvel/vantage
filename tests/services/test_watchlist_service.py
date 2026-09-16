@@ -168,9 +168,7 @@ def test_scheduled_rejects_raw_cron_key() -> None:
     "rule_type",
     [AlertRuleType.NEW_FILING, AlertRuleType.PRICE_MOVE, AlertRuleType.SCHEDULED],
 )
-@pytest.mark.parametrize(
-    "bad_config", [None, [], "not-a-dict"], ids=["none", "list", "string"]
-)
+@pytest.mark.parametrize("bad_config", [None, [], "not-a-dict"], ids=["none", "list", "string"])
 def test_validate_rule_config_rejects_non_dict_config(
     rule_type: AlertRuleType, bad_config: object
 ) -> None:
@@ -207,9 +205,7 @@ async def _seed_company(db_session: AsyncSession, ticker: str) -> Company:
     return company
 
 
-async def _seed_research_plan(
-    db_session: AsyncSession, owner: User, ticker: str
-) -> ResearchPlan:
+async def _seed_research_plan(db_session: AsyncSession, owner: User, ticker: str) -> ResearchPlan:
     """Persist a ResearchRequest + owning ResearchPlan row (the FK a
     ResearchMemo hangs off), mirroring
     ``tests/api/test_research_api.py::_seed_research_plan``.
@@ -220,9 +216,7 @@ async def _seed_research_plan(
     db_session.add(request)
     await db_session.flush()
 
-    plan = ResearchPlan(
-        request_id=request.id, user_id=owner.id, resolved_tickers=[ticker]
-    )
+    plan = ResearchPlan(request_id=request.id, user_id=owner.id, resolved_tickers=[ticker])
     db_session.add(plan)
     await db_session.flush()
     await db_session.refresh(plan)
@@ -276,18 +270,14 @@ async def test_returns_newest_memo_status_and_date_for_ticker_with_two_memos(
     plan = await _seed_research_plan(db_session, user, "AAPL")
     await db_session.commit()
 
-    await _seed_memo(
-        db_session, plan, user, ticker="AAPL", status=ResearchMemoStatus.PARTIAL
-    )
+    await _seed_memo(db_session, plan, user, ticker="AAPL", status=ResearchMemoStatus.PARTIAL)
     newest = await _seed_memo(
         db_session, plan, user, ticker="AAPL", status=ResearchMemoStatus.COMPLETE
     )
 
     result = await latest_memo_status_by_ticker(["AAPL"], user.id, db_session)
 
-    assert result == {
-        "AAPL": (ResearchMemoStatus.COMPLETE.value, newest.created_at.isoformat())
-    }
+    assert result == {"AAPL": (ResearchMemoStatus.COMPLETE.value, newest.created_at.isoformat())}
 
 
 async def test_omits_ticker_with_no_memo(db_session: AsyncSession) -> None:
@@ -341,9 +331,7 @@ async def test_omits_soft_deleted_memo_even_when_newest(
 
     # The newer, soft-deleted row must be excluded entirely — the result
     # falls back to the older, non-deleted row, not to an empty result.
-    assert result == {
-        "AAPL": (ResearchMemoStatus.PARTIAL.value, older.created_at.isoformat())
-    }
+    assert result == {"AAPL": (ResearchMemoStatus.PARTIAL.value, older.created_at.isoformat())}
 
 
 async def test_resolves_several_tickers_in_one_call(db_session: AsyncSession) -> None:
@@ -357,9 +345,7 @@ async def test_resolves_several_tickers_in_one_call(db_session: AsyncSession) ->
     aapl_memo = await _seed_memo(db_session, plan_aapl, user, ticker="AAPL")
     msft_memo = await _seed_memo(db_session, plan_msft, user, ticker="MSFT")
 
-    result = await latest_memo_status_by_ticker(
-        ["AAPL", "MSFT", "GOOG"], user.id, db_session
-    )
+    result = await latest_memo_status_by_ticker(["AAPL", "MSFT", "GOOG"], user.id, db_session)
 
     assert result == {
         "AAPL": (aapl_memo.status.value, aapl_memo.created_at.isoformat()),

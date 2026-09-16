@@ -38,7 +38,7 @@ import argparse
 import asyncio
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
 from sqlalchemy import select
@@ -151,7 +151,7 @@ async def run_smoke_test(ticker: str, keep: bool) -> None:
             session.add(entry)
             await session.flush()
 
-            two_days_ago = datetime.now(timezone.utc) - timedelta(days=2)
+            two_days_ago = datetime.now(UTC) - timedelta(days=2)
 
             rule_new_filing = AlertRule(
                 watchlist_id=entry.id,
@@ -209,22 +209,34 @@ async def run_smoke_test(ticker: str, keep: bool) -> None:
                 rule_new_filing.state is not None and accession is not None,
                 "NEW_FILING rule seeded its cursor (did NOT fire) on tick one",
             )
-            print(f"  NEW_FILING seeded accession (eyeball this — real SEC format, e.g. 0001234567-25-000123): {accession!r}")
+            print(
+                "  NEW_FILING seeded accession (eyeball this — real SEC format, e.g. "
+                f"0001234567-25-000123): {accession!r}"
+            )
 
             baseline_price = (rule_price_move.state or {}).get("last_price")
             _check(
-                isinstance(baseline_price, (int, float)) and baseline_price > 0,
+                isinstance(baseline_price, int | float) and baseline_price > 0,
                 "PRICE_MOVE rule seeded a plausible baseline price (did NOT fire) on tick one",
             )
-            print(f"  PRICE_MOVE seeded baseline price (eyeball this — should be a plausible {ticker} share price): ${baseline_price:.2f}")
+            print(
+                "  PRICE_MOVE seeded baseline price (eyeball this — should be a "
+                f"plausible {ticker} share price): ${baseline_price:.2f}"
+            )
 
             # --- Step 4: tick two --------------------------------------------
             print("\n=== Step 4: tick two — simulate a large PRICE_MOVE and re-evaluate ===")
             simulated_baseline = baseline_price / 2.0
-            rule_price_move.state = {**(rule_price_move.state or {}), "last_price": simulated_baseline}
+            rule_price_move.state = {
+                **(rule_price_move.state or {}),
+                "last_price": simulated_baseline,
+            }
             await session.flush()
             await session.commit()
-            print(f"  Mutated PRICE_MOVE baseline to ${simulated_baseline:.2f} (half the observed price) to force a fire")
+            print(
+                f"  Mutated PRICE_MOVE baseline to ${simulated_baseline:.2f} (half the "
+                "observed price) to force a fire"
+            )
 
             fired_tick_two = await evaluate_all_rules(session, settings=settings)
             await asyncio.sleep(_PUBSUB_SETTLE_SECONDS)
@@ -238,34 +250,43 @@ async def run_smoke_test(ticker: str, keep: bool) -> None:
             _check(
                 rule_scheduled.state is not None
                 and rule_scheduled.state.get("last_triggered_at") is not None,
-                "SCHEDULED rule did NOT refire on tick two (last_triggered_at still set from tick one)",
+                "SCHEDULED rule did NOT refire on tick two (last_triggered_at still set "
+                "from tick one)",
             )
 
             # --- Step 5: assert delivery -----------------------------------
             print("\n=== Step 5: assert delivery over the real Redis channel ===")
             _check(
                 len(collected) == 2,
-                f"exactly 2 notification messages received over Redis pub/sub (got {len(collected)})",
+                "exactly 2 notification messages received over Redis pub/sub "
+                f"(got {len(collected)})",
             )
             for i, payload in enumerate(collected, start=1):
                 _check(
                     set(payload.keys()) == EXPECTED_PAYLOAD_KEYS,
-                    f"message {i} payload key set is exactly {sorted(EXPECTED_PAYLOAD_KEYS)} (got {sorted(payload.keys())})",
+                    f"message {i} payload key set is exactly {sorted(EXPECTED_PAYLOAD_KEYS)} "
+                    f"(got {sorted(payload.keys())})",
                 )
                 captured_event_ids.append(payload["id"])
-                print(f"  Message {i} composed copy (eyeball this — read like a real user-facing sentence): {payload['message']!r}")
+                print(
+                    f"  Message {i} composed copy (eyeball this — read like a real "
+                    f"user-facing sentence): {payload['message']!r}"
+                )
 
             # --- Step 6: assert durability -----------------------------------
             print("\n=== Step 6: assert durability in a FRESH session ===")
 
         async with session_scope() as fresh_session:
             result = await fresh_session.execute(
-                select(AlertEvent).where(AlertEvent.alert_rule_id.in_([rule_scheduled.id, rule_price_move.id]))
+                select(AlertEvent).where(
+                    AlertEvent.alert_rule_id.in_([rule_scheduled.id, rule_price_move.id])
+                )
             )
             durable_rows = result.scalars().all()
             _check(
                 len(durable_rows) == len(collected),
-                f"durable alert_events row count ({len(durable_rows)}) matches published message count ({len(collected)})",
+                f"durable alert_events row count ({len(durable_rows)}) matches published "
+                f"message count ({len(collected)})",
             )
 
         print("\n=== PASS SUMMARY ===")
@@ -314,13 +335,16 @@ async def run_smoke_test(ticker: str, keep: bool) -> None:
                     remaining = result.scalars().all()
                     _check(
                         len(remaining) == 0,
-                        f"zero alert_events rows remain after cascade teardown (found {len(remaining)}) — D-06 cascade proven live",
+                        f"zero alert_events rows remain after cascade teardown "
+                        f"(found {len(remaining)}) — D-06 cascade proven live",
                     )
             print("  Teardown complete: smoke WatchlistEntry + user deleted, cascade verified.")
         else:
             print("\n=== Step 7: teardown SKIPPED (--keep) ===")
             print(f"  Smoke user id: {user_id}  email: {SMOKE_EMAIL}")
-            print("  Log in as this user (or point your session at this user id) to inspect the UI.")
+            print(
+                "  Log in as this user (or point your session at this user id) to inspect the UI."
+            )
 
 
 def main() -> None:

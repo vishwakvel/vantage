@@ -51,6 +51,7 @@ def _groq_result(text: str) -> GroqResult:
         usage_metadata={"input_tokens": 20, "output_tokens": 15, "total_tokens": 35},
     )
 
+
 #: Runs the async tests in this module under anyio (asyncio backend, per
 #: conftest.py's anyio_backend fixture) — mirrors
 #: tests/agents/test_synthesis.py's module-level marker.
@@ -185,8 +186,7 @@ def test_serialize_memo_none_guards_failed_section() -> None:
 
 def test_serialize_history_caps_to_last_eight_oldest_first() -> None:
     messages = [
-        _FakeMessage("user" if i % 2 == 0 else "assistant", f"message {i}")
-        for i in range(12)
+        _FakeMessage("user" if i % 2 == 0 else "assistant", f"message {i}") for i in range(12)
     ]
     text = _serialize_history(messages)
     lines = text.split("\n")
@@ -242,9 +242,7 @@ async def test_answer_chat_turn_returns_true_flag() -> None:
     with patch(
         "app.services.chat_service.call_groq",
         AsyncMock(
-            return_value=_groq_result(
-                'Answer here.\n```json\n{"coverage_exceeded": true}\n```'
-            )
+            return_value=_groq_result('Answer here.\n```json\n{"coverage_exceeded": true}\n```')
         ),
     ):
         narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
@@ -287,9 +285,7 @@ async def test_answer_chat_turn_no_fence_returns_narrative_and_false() -> None:
     body = _full_memo_body()
     with patch(
         "app.services.chat_service.call_groq",
-        AsyncMock(
-            return_value=_groq_result("A narrative answer with no fence at all.")
-        ),
+        AsyncMock(return_value=_groq_result("A narrative answer with no fence at all.")),
     ):
         narrative, coverage_exceeded = await answer_chat_turn(body, [], "A question?")
 

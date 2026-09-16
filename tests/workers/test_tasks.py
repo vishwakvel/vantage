@@ -80,15 +80,11 @@ async def _seed_company(
 
 
 async def _seed_plan(db_session: AsyncSession, owner: User) -> ResearchPlan:
-    request = ResearchRequest(
-        user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED"
-    )
+    request = ResearchRequest(user_id=owner.id, raw_query="Tell me about Apple", status="RESOLVED")
     db_session.add(request)
     await db_session.flush()
 
-    plan = ResearchPlan(
-        request_id=request.id, user_id=owner.id, resolved_tickers=["AAPL"]
-    )
+    plan = ResearchPlan(request_id=request.id, user_id=owner.id, resolved_tickers=["AAPL"])
     db_session.add(plan)
     await db_session.flush()
     await db_session.refresh(plan)
@@ -111,9 +107,7 @@ async def _seed_pending_memo(
     return memo
 
 
-async def _seed_failed_sentiment_output(
-    db_session: AsyncSession, plan: ResearchPlan
-) -> None:
+async def _seed_failed_sentiment_output(db_session: AsyncSession, plan: ResearchPlan) -> None:
     """Seed an AgentTask/AgentOutput pair so the EXEC-04 reason lookup finds
     a non-null reason for the FAILED SentimentNLP section."""
     task = AgentTask(
@@ -215,9 +209,7 @@ async def test_run_research_async_updates_existing_memo_with_full_body(
             "app.workers.tasks.read_and_clear_api_call_count",
             new=AsyncMock(return_value=0),
         ),
-        patch(
-            "app.workers.tasks.publish_memo_terminal", new=AsyncMock()
-        ) as mock_publish_terminal,
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()) as mock_publish_terminal,
         patch("app.workers.tasks.session_scope", _fake_session_scope),
     ):
         await _run_research_async(
@@ -258,9 +250,7 @@ async def test_run_research_async_updates_existing_memo_with_full_body(
 
     # No second ResearchMemo row was created for the plan.
     count_result = await db_session.execute(
-        select(func.count()).select_from(ResearchMemo).where(
-            ResearchMemo.plan_id == plan.id
-        )
+        select(func.count()).select_from(ResearchMemo).where(ResearchMemo.plan_id == plan.id)
     )
     assert count_result.scalar_one() == 1
 
@@ -438,9 +428,7 @@ async def test_run_research_async_marks_memo_failed_on_unexpected_exception(
             "app.workers.tasks.read_and_clear_api_call_count",
             new=AsyncMock(return_value=0),
         ),
-        patch(
-            "app.workers.tasks.publish_memo_terminal", new=AsyncMock()
-        ) as mock_publish_terminal,
+        patch("app.workers.tasks.publish_memo_terminal", new=AsyncMock()) as mock_publish_terminal,
         patch("app.workers.tasks.session_scope", _fake_session_scope),
     ):
         await _run_research_async(
@@ -562,9 +550,7 @@ async def test_run_research_async_sums_tokens_across_agents(
     await _seed_company(db_session)
     plan = await _seed_plan(db_session, owner)
     memo = await _seed_pending_memo(db_session, plan, owner)
-    await _seed_agent_output_with_tokens(
-        db_session, plan, "FundamentalAnalysis", 10, 20
-    )
+    await _seed_agent_output_with_tokens(db_session, plan, "FundamentalAnalysis", 10, 20)
     await _seed_agent_output_with_tokens(db_session, plan, "SentimentNLP", 5, 15)
     await _seed_agent_output_with_tokens(db_session, plan, "RiskAssessment", 7, 3)
     await db_session.commit()
@@ -649,9 +635,7 @@ async def test_run_research_async_null_token_columns_contribute_zero(
     await _seed_company(db_session)
     plan = await _seed_plan(db_session, owner)
     memo = await _seed_pending_memo(db_session, plan, owner)
-    await _seed_agent_output_with_tokens(
-        db_session, plan, "FundamentalAnalysis", 10, 20
-    )
+    await _seed_agent_output_with_tokens(db_session, plan, "FundamentalAnalysis", 10, 20)
     await _seed_agent_output_with_tokens(db_session, plan, "SentimentNLP", None, None)
     await db_session.commit()
 
@@ -694,14 +678,10 @@ async def test_run_research_async_rerun_excludes_older_agent_output(
     plan = await _seed_plan(db_session, owner)
     memo = await _seed_pending_memo(db_session, plan, owner)
     # Older run's row for the same agent_type.
-    await _seed_agent_output_with_tokens(
-        db_session, plan, "FundamentalAnalysis", 1000, 2000
-    )
+    await _seed_agent_output_with_tokens(db_session, plan, "FundamentalAnalysis", 1000, 2000)
     await db_session.commit()
     # This run's (newer) row for the same agent_type.
-    await _seed_agent_output_with_tokens(
-        db_session, plan, "FundamentalAnalysis", 10, 20
-    )
+    await _seed_agent_output_with_tokens(db_session, plan, "FundamentalAnalysis", 10, 20)
     await db_session.commit()
 
     mock_graph = MagicMock()
@@ -837,9 +817,7 @@ async def test_run_research_async_zero_counter_read_still_yields_well_formed_cos
     await _seed_company(db_session)
     plan = await _seed_plan(db_session, owner)
     memo = await _seed_pending_memo(db_session, plan, owner)
-    await _seed_agent_output_with_tokens(
-        db_session, plan, "FundamentalAnalysis", 10, 20
-    )
+    await _seed_agent_output_with_tokens(db_session, plan, "FundamentalAnalysis", 10, 20)
     await db_session.commit()
 
     mock_graph = MagicMock()

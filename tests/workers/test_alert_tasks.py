@@ -33,9 +33,7 @@ def test_task_resets_singletons_before_asyncio_run() -> None:
     parent = MagicMock()
 
     with (
-        patch(
-            "app.workers.alert_tasks.reset_session_factory", parent.reset_session_factory
-        ),
+        patch("app.workers.alert_tasks.reset_session_factory", parent.reset_session_factory),
         patch("app.workers.alert_tasks.reset_edgar_client", parent.reset_edgar_client),
         patch("app.workers.alert_tasks.asyncio.run", parent.asyncio_run),
     ):

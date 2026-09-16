@@ -45,7 +45,7 @@ pass even when a JSON column write was silently dropped at commit.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -169,7 +169,9 @@ def mocks():
             new_callable=AsyncMock,
         ) as publish,
     ):
-        yield type("Mocks", (), {"edgar_get": edgar_get, "get_price": get_price, "publish": publish})()
+        yield type(
+            "Mocks", (), {"edgar_get": edgar_get, "get_price": get_price, "publish": publish}
+        )()
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,7 @@ class TestDispatcher:
             {"cadence": "daily"},
             user=user,
             ticker="TSLA",
-            created_at=datetime.now(timezone.utc) - timedelta(days=2),
+            created_at=datetime.now(UTC) - timedelta(days=2),
         )
         disabled_rule = await _seed_rule(
             db_session,
@@ -278,7 +280,7 @@ class TestDispatcher:
     async def test_failing_rule_does_not_abort_tick_or_discard_sibling_state(
         self, db_session, mocks
     ):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         rule_a = await _seed_rule(
             db_session,
             AlertRuleType.NEW_FILING,
@@ -314,7 +316,7 @@ class TestDispatcher:
             db_session,
             AlertRuleType.SCHEDULED,
             {"cadence": "daily"},
-            created_at=datetime.now(timezone.utc) - timedelta(days=2),
+            created_at=datetime.now(UTC) - timedelta(days=2),
         )
 
         fired = await evaluate_all_rules(db_session)
@@ -329,7 +331,7 @@ class TestDispatcher:
             db_session,
             AlertRuleType.SCHEDULED,
             {"cadence": "daily"},
-            created_at=datetime.now(timezone.utc) - timedelta(days=2),
+            created_at=datetime.now(UTC) - timedelta(days=2),
         )
 
         observed = {}
@@ -495,7 +497,7 @@ class TestScheduled:
             db_session,
             AlertRuleType.SCHEDULED,
             {"cadence": "daily"},
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
         fired = await evaluate_all_rules(db_session)
@@ -510,7 +512,7 @@ class TestScheduled:
             AlertRuleType.SCHEDULED,
             {"cadence": "daily"},
             ticker="TSLA",
-            created_at=datetime.now(timezone.utc) - timedelta(days=2),
+            created_at=datetime.now(UTC) - timedelta(days=2),
         )
 
         fired = await evaluate_all_rules(db_session)
@@ -530,7 +532,7 @@ class TestScheduled:
             db_session,
             AlertRuleType.SCHEDULED,
             {"cadence": "daily"},
-            created_at=datetime.now(timezone.utc) - timedelta(days=2),
+            created_at=datetime.now(UTC) - timedelta(days=2),
         )
 
         await evaluate_all_rules(db_session)
@@ -544,11 +546,7 @@ class TestScheduled:
             db_session,
             AlertRuleType.SCHEDULED,
             {"cadence": "weekly"},
-            state={
-                "last_triggered_at": (
-                    datetime.now(timezone.utc) - timedelta(days=8)
-                ).isoformat()
-            },
+            state={"last_triggered_at": (datetime.now(UTC) - timedelta(days=8)).isoformat()},
         )
 
         fired = await evaluate_all_rules(db_session)
@@ -566,14 +564,14 @@ class TestScheduled:
             AlertRuleType.SCHEDULED,
             {"cadence": cadence},
             ticker="AAPL",
-            created_at=datetime.now(timezone.utc) - timedelta(days=interval_days - 1),
+            created_at=datetime.now(UTC) - timedelta(days=interval_days - 1),
         )
         fire_rule = await _seed_rule(
             db_session,
             AlertRuleType.SCHEDULED,
             {"cadence": cadence},
             ticker="MSFT",
-            created_at=datetime.now(timezone.utc) - timedelta(days=interval_days + 1),
+            created_at=datetime.now(UTC) - timedelta(days=interval_days + 1),
         )
 
         await evaluate_all_rules(db_session)
@@ -584,11 +582,11 @@ class TestScheduled:
     @pytest.mark.anyio
     async def test_scheduled_fire_launches_no_research(self, db_session, mocks):
         """D-01, asserted as a database fact rather than an import check."""
-        rule = await _seed_rule(
+        await _seed_rule(
             db_session,
             AlertRuleType.SCHEDULED,
             {"cadence": "daily"},
-            created_at=datetime.now(timezone.utc) - timedelta(days=2),
+            created_at=datetime.now(UTC) - timedelta(days=2),
         )
 
         fired = await evaluate_all_rules(db_session)
@@ -676,7 +674,7 @@ class TestPriceMove:
     @pytest.mark.anyio
     async def test_up_move_past_threshold_fires_for_direction_up(self, db_session, mocks):
         mocks.get_price.return_value = 108.0
-        rule = await _seed_rule(
+        await _seed_rule(
             db_session,
             AlertRuleType.PRICE_MOVE,
             {"threshold_pct": 5.0, "direction": "up"},
@@ -690,7 +688,7 @@ class TestPriceMove:
     @pytest.mark.anyio
     async def test_down_move_does_not_fire_for_direction_up(self, db_session, mocks):
         mocks.get_price.return_value = 93.0
-        rule = await _seed_rule(
+        await _seed_rule(
             db_session,
             AlertRuleType.PRICE_MOVE,
             {"threshold_pct": 5.0, "direction": "up"},
@@ -705,7 +703,7 @@ class TestPriceMove:
     @pytest.mark.parametrize("price", [93.0, 107.0])
     async def test_direction_either_fires_on_both_signs(self, db_session, mocks, price):
         mocks.get_price.return_value = price
-        rule = await _seed_rule(
+        await _seed_rule(
             db_session,
             AlertRuleType.PRICE_MOVE,
             {"threshold_pct": 5.0, "direction": "either"},
@@ -720,7 +718,7 @@ class TestPriceMove:
     async def test_exactly_at_threshold_fires(self, db_session, mocks):
         """The comparison is inclusive: pct_change <= -threshold_pct."""
         mocks.get_price.return_value = 95.0
-        rule = await _seed_rule(
+        await _seed_rule(
             db_session,
             AlertRuleType.PRICE_MOVE,
             {"threshold_pct": 5.0, "direction": "down"},
@@ -804,9 +802,7 @@ class TestPriceMove:
         previously_disabled = target_logger.disabled
         target_logger.disabled = False
         try:
-            with caplog.at_level(
-                logging.WARNING, logger="app.services.alert_evaluation_service"
-            ):
+            with caplog.at_level(logging.WARNING, logger="app.services.alert_evaluation_service"):
                 fired = await evaluate_all_rules(db_session)
         finally:
             target_logger.disabled = previously_disabled
@@ -876,14 +872,14 @@ class TestStatePersistence:
             AlertRuleType.PRICE_MOVE,
             {"threshold_pct": 5.0, "direction": "down"},
             ticker="AAPL",
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+            created_at=datetime.now(UTC) - timedelta(minutes=2),
         )
         rule_b = await _seed_rule(
             db_session,
             AlertRuleType.PRICE_MOVE,
             {"threshold_pct": 5.0, "direction": "down"},
             ticker="MSFT",
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            created_at=datetime.now(UTC) - timedelta(minutes=1),
         )
 
         rule_a_id, rule_b_id = rule_a.id, rule_b.id

@@ -10,16 +10,16 @@ Coverage:
   - test_dense_query_where_filter — dense_query always forwards where={"user_id": ...}
   - test_canonical_exists_true  — canonical_exists returns True when a PUBLIC chunk is found (CR-01)
   - test_canonical_exists_false — canonical_exists returns False when no chunk found
-  - test_canonical_exists_for_user_scopes_to_user_id — canonical_exists_for_user scopes to user_id (CR-01)
+  - test_canonical_exists_for_user_scopes_to_user_id — canonical_exists_for_user scopes to
+    user_id (CR-01)
   - test_embed_texts_returns_list — embed_texts returns list[list[float]]
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -97,13 +97,12 @@ def test_user_isolation(monkeypatch):
     call_kwargs = mock_col.query.call_args.kwargs
     where = call_kwargs["where"]
     assert where == {"user_id": {"$in": ["userB", ""]}}, (
-        "dense_query must scope to exactly [user_id, \"\"] (private + public), "
-        f"got {where!r}"
+        'dense_query must scope to exactly [user_id, ""] (private + public), ' f"got {where!r}"
     )
     allowed_ids = set(where["user_id"]["$in"])
-    assert "userA" not in allowed_ids, (
-        "dense_query's filter must never include another user's private id"
-    )
+    assert (
+        "userA" not in allowed_ids
+    ), "dense_query's filter must never include another user's private id"
 
     # Result must have no documents for userB (server returns empty, no cross-user leak)
     assert result["ids"][0] == [], "userB query must return zero chunks"
@@ -164,9 +163,9 @@ def test_dense_query_where_filter(monkeypatch):
     mock_col.query.assert_called_once()
     call_kwargs = mock_col.query.call_args.kwargs
     assert "where" in call_kwargs, "dense_query must pass where= to collection.query"
-    assert call_kwargs["where"] == {"user_id": ""}, (
-        "dense_query must include user_id in where filter (empty string for public)"
-    )
+    assert call_kwargs["where"] == {
+        "user_id": ""
+    }, "dense_query must include user_id in where filter (empty string for public)"
     assert call_kwargs["n_results"] == 5
 
 

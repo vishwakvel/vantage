@@ -61,10 +61,7 @@ def test_beat_schedule_has_single_alert_entry():
     never three per-type entries. Asserted structurally so a future
     per-type entry cannot be added without updating this test (and its
     D-04 justification)."""
-    assert (
-        celery_app.conf.beat_schedule["evaluate-alert-rules"]["task"]
-        == "evaluate_alert_rules"
-    )
+    assert celery_app.conf.beat_schedule["evaluate-alert-rules"]["task"] == "evaluate_alert_rules"
     assert (
         celery_app.conf.beat_schedule["evaluate-alert-rules"]["schedule"]
         == ALERT_EVALUATION_INTERVAL_SECONDS

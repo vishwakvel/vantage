@@ -286,9 +286,7 @@ async def test_call_groq_usage_metadata_shape(monkeypatch: pytest.MonkeyPatch) -
 
 def test_groq_result_is_frozen() -> None:
     """GroqResult is a frozen dataclass — assigning to a field raises."""
-    result = GroqResult(
-        text="x", prompt_tokens=0, completion_tokens=0, usage_metadata={}
-    )
+    result = GroqResult(text="x", prompt_tokens=0, completion_tokens=0, usage_metadata={})
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.text = "y"  # type: ignore[misc]
 
@@ -381,9 +379,7 @@ async def test_call_groq_no_outbound_langsmith_call_when_tracing_disabled(
         langsmith_client_calls.append((args, kwargs))
         return original_request(self, *args, **kwargs)
 
-    monkeypatch.setattr(
-        langsmith_client_module.Client, "request_with_retries", _tracking_request
-    )
+    monkeypatch.setattr(langsmith_client_module.Client, "request_with_retries", _tracking_request)
 
     await call_groq("test prompt", max_tokens=10)
 
@@ -397,9 +393,7 @@ def test_settings_has_no_langsmith_or_langchain_field() -> None:
     from app.core.config import Settings
 
     matches = [
-        f
-        for f in Settings.model_fields
-        if "langsmith" in f.lower() or "langchain" in f.lower()
+        f for f in Settings.model_fields if "langsmith" in f.lower() or "langchain" in f.lower()
     ]
     assert matches == []
 
