@@ -1,0 +1,52 @@
+# Fly.io deployment manifest for the self-hosted Redis backing service.
+#
+# Separate Fly app from `vantage` for the same reason as vantage-chroma: this
+# runs the stock `redis:7` image, not the project's Dockerfile, and Fly
+# process groups all share one image (D-02).
+#
+# Region note: same rule as vantage-chroma — primary_region MUST match the
+# main `vantage` app (iad), because a Fly volume is region-pinned block
+# storage and a rescheduled machine in another region loses its volume.
+app            = "vantage-redis"
+primary_region = "iad"
+
+[build]
+  # Pinned exact tag matching the `redis:` image already used in
+  # docker-compose.yml. Not a floating/latest tag.
+  image = "redis:7"
+
+# A [processes] entry replaces the image's default command while the image's
+# own entrypoint still runs — this is exactly the behaviour the official
+# Redis image expects; its entrypoint forwards these arguments through to
+# redis-server. --appendonly yes turns on AOF persistence; --dir must equal
+# the mount destination below for the same reason as the Chroma manifest:
+# writing anywhere else lands on the ephemeral root filesystem.
+[processes]
+  app = "redis-server --appendonly yes --dir /data"
+
+# Accepted trade-off of the cost-minimal self-hosted choice (D-06 as revised
+# by research; see also 14-RESEARCH.md Pitfall 5): this single Redis instance
+# is simultaneously the Celery broker, the Celery result backend, the
+# revoked-token blocklist, and the research-progress publish channel.
+# Append-only persistence means a machine restart replays rather than losing
+# state, but a restart during a write window can still drop the most recent
+# entries. The bounded consequences are that a recently-revoked token may be
+# accepted again until its natural expiry (the app already caps this at 24
+# hours via the token-lifetime setting), and that an in-flight research task
+# may need to be resubmitted. Both are acceptable at this deployment's scale;
+# the managed alternative (Upstash Fixed 250MB, ~$10/mo, durable) is noted in
+# deploy/fly/README.md.
+[[mounts]]
+  source       = "redis_data"
+  destination  = "/data"
+  initial_size = "1gb"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "256mb"
+
+# NO [http_service] and no published port — private-network-only service.
+# No password is set in this manifest: the instance is reachable only from
+# the main app over Fly's private network at vantage-redis.flycast:6379,
+# where an application-layer credential would be a committed secret with no
+# corresponding security benefit.
